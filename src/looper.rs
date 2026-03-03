@@ -8,7 +8,7 @@ use crate::{
     tools::LooperTools,
     types::{HandlerToLooperMessage, LooperToHandlerToolCallResult, LooperToInterfaceMessage},
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tokio::sync::{
     Mutex,
     mpsc::{self, Receiver, Sender},
@@ -22,8 +22,28 @@ pub struct Looper {
 }
 
 pub enum AgentLoopState {
-    Continue(String),
-    Done
+    Continue,
+    Done,
+}
+
+enum ApiMode {
+    Responses,
+    ChatCompletions,
+}
+
+impl ApiMode {
+    fn from_env() -> Result<Self> {
+        let raw = std::env::var("LOOPER_API_MODE").unwrap_or_else(|_| "responses".to_string());
+
+        match raw.as_str() {
+            "responses" => Ok(ApiMode::Responses),
+            "chat_completions" => Ok(ApiMode::ChatCompletions),
+            _ => bail!(
+                "Invalid LOOPER_API_MODE='{}'. Expected 'responses' or 'chat_completions'",
+                raw
+            ),
+        }
+    }
 }
 
 impl Looper {
@@ -33,15 +53,17 @@ impl Looper {
 
         let system_message = get_system_message();
 
-        let api_mode = std::env::var("LOOPER_API_MODE").unwrap_or_else(|_| "responses".to_string());
+        let api_mode = ApiMode::from_env()?;
 
-        let mut handler: Box<dyn ChatHandler> = if api_mode == "chat_completions" {
-            Box::new(OpenAIChatHandler::new(handler_looper_sender, &system_message)?)
-        } else {
-            Box::new(OpenAIResponsesHandler::new(
+        let mut handler: Box<dyn ChatHandler> = match api_mode {
+            ApiMode::ChatCompletions => Box::new(OpenAIChatHandler::new(
                 handler_looper_sender,
                 &system_message,
-            )?)
+            )?),
+            ApiMode::Responses => Box::new(OpenAIResponsesHandler::new(
+                handler_looper_sender,
+                &system_message,
+            )?),
         };
 
         // get and set available tools
@@ -120,7 +142,7 @@ impl Looper {
 // }
 
 fn get_system_message() -> String {
-    format!("
+    "
         # Agent Loop System Prompt
         You are an AI assistant with access to tools. Use them proactively to complete tasks.
 
@@ -165,5 +187,5 @@ fn get_system_message() -> String {
         - Be concise. Do the work, report the result.
         - Do not narrate your thought process unless asked. Skip preamble and postamble.
         - If you cannot complete a task, say so clearly and explain what's blocking you.
-    ")
+    ".to_string()
 }

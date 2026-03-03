@@ -28,7 +28,11 @@ impl LooperTool for ListDirectoryTool {
                 let mut items = Vec::new();
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let is_dir = entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false);
+                    let is_dir = entry
+                        .file_type()
+                        .await
+                        .map(|ft| ft.is_dir())
+                        .unwrap_or(false);
                     if is_dir {
                         items.push(format!("{}/", name));
                     } else {

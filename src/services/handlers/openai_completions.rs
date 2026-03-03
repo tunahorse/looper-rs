@@ -6,8 +6,7 @@ use async_openai::{
         ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageArgs,
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessageArgs,
-        ChatCompletionTools, CreateChatCompletionRequestArgs, FinishReason,
-        ReasoningEffort,
+        ChatCompletionTools, CreateChatCompletionRequestArgs, FinishReason, ReasoningEffort,
     },
 };
 
@@ -16,30 +15,26 @@ use async_trait::async_trait;
 
 use anyhow::Result;
 use futures::StreamExt;
-use tokio::sync::{
-    mpsc::Sender,
-    oneshot,
-};
+use tokio::sync::{mpsc::Sender, oneshot};
 
 use serde_json::Value;
 
-use crate::{looper::AgentLoopState, services::ChatHandler, types::{
-    HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition,
-}};
+use crate::{
+    looper::AgentLoopState,
+    services::ChatHandler,
+    types::{HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition},
+};
 
 pub struct OpenAIChatHandler {
     client: Client<OpenAIConfig>,
     messages: Vec<ChatCompletionRequestMessage>,
     sender: Sender<HandlerToLooperMessage>,
     tools: Vec<ChatCompletionTools>,
-    loop_state: AgentLoopState
+    loop_state: AgentLoopState,
 }
 
 impl OpenAIChatHandler {
-    pub fn new(
-        sender: Sender<HandlerToLooperMessage>,
-        system_message: &str,
-    ) -> Result<Self> {
+    pub fn new(sender: Sender<HandlerToLooperMessage>, system_message: &str) -> Result<Self> {
         let client = Client::new();
         let system_message = ChatCompletionRequestSystemMessageArgs::default()
             .content(system_message)
@@ -54,7 +49,7 @@ impl OpenAIChatHandler {
             messages,
             sender,
             tools,
-            loop_state: AgentLoopState::Continue("".to_string())
+            loop_state: AgentLoopState::Continue,
         })
     }
 
@@ -200,17 +195,12 @@ impl OpenAIChatHandler {
     }
 
     fn handle_agent_loop_state(&mut self, name: &str, args: &Value) {
-        if name != "set_agent_loop_state" { return; }
+        if name != "set_agent_loop_state" {
+            return;
+        }
 
         match args.get("state").and_then(Value::as_str) {
-            Some("continue") => {
-                let reason = args
-                    .get("continue_reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                self.loop_state = AgentLoopState::Continue(reason);
-            }
+            Some("continue") => self.loop_state = AgentLoopState::Continue,
             Some("done") | None => {
                 // If the model responds with a state that isn't supported
                 // we should just end to avoid infinite loop
@@ -245,7 +235,7 @@ impl ChatHandler for OpenAIChatHandler {
 
         self.messages.push(message);
 
-        while let AgentLoopState::Continue(_) = &self.loop_state {
+        while let AgentLoopState::Continue = &self.loop_state {
             self.loop_state = AgentLoopState::Done;
             let response = self.inner_send_message().await?;
 
@@ -271,9 +261,5 @@ impl ChatHandler for OpenAIChatHandler {
             .collect::<Vec<ChatCompletionTools>>();
 
         self.tools = tools;
-    }
-
-    fn set_continue(&mut self) {
-        self.loop_state = AgentLoopState::Continue("".to_string());
     }
 }

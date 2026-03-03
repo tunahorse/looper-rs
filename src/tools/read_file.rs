@@ -29,4 +29,3 @@ impl LooperTool for ReadFileTool {
         }
     }
 }
-

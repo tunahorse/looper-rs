@@ -1,9 +1,14 @@
 use async_openai::{
     Client,
     config::OpenAIConfig,
-    types::{chat::ReasoningEffort, responses::{
-        CreateResponseArgs, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, InputItem, InputParam, Item, OutputItem, Reasoning, ReasoningSummary, ResponseStreamEvent, Tool
-    }},
+    types::{
+        chat::ReasoningEffort,
+        responses::{
+            CreateResponseArgs, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+            InputItem, InputParam, Item, OutputItem, Reasoning, ReasoningSummary,
+            ResponseStreamEvent, Tool,
+        },
+    },
 };
 
 use async_recursion::async_recursion;
@@ -15,7 +20,9 @@ use serde_json::Value;
 use tokio::sync::{mpsc::Sender, oneshot};
 
 use crate::{
-    looper::AgentLoopState, services::ChatHandler, types::{HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition}
+    looper::AgentLoopState,
+    services::ChatHandler,
+    types::{HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition},
 };
 
 pub struct OpenAIResponsesHandler {
@@ -24,7 +31,7 @@ pub struct OpenAIResponsesHandler {
     sender: Sender<HandlerToLooperMessage>,
     tools: Vec<Tool>,
     instructions: String,
-    loop_state: AgentLoopState
+    loop_state: AgentLoopState,
 }
 
 impl OpenAIResponsesHandler {
@@ -37,7 +44,7 @@ impl OpenAIResponsesHandler {
             sender,
             tools: Vec::new(),
             instructions: system_message.to_string(),
-            loop_state: AgentLoopState::Continue("".to_string())
+            loop_state: AgentLoopState::Continue,
         })
     }
 
@@ -54,20 +61,19 @@ impl OpenAIResponsesHandler {
                     .input(i)
                     .tools(self.tools.clone())
                     .reasoning(Reasoning {
-                          effort: Some(ReasoningEffort::High),
-                          summary: Some(ReasoningSummary::Concise),
-                      })
+                        effort: Some(ReasoningEffort::High),
+                        summary: Some(ReasoningSummary::Concise),
+                    })
                     .instructions(self.instructions.clone());
-
-            },
+            }
             None => {
                 builder
                     .model(model)
                     .tools(self.tools.clone())
                     .reasoning(Reasoning {
-                          effort: Some(ReasoningEffort::High),
-                          summary: Some(ReasoningSummary::Concise),
-                      })
+                        effort: Some(ReasoningEffort::High),
+                        summary: Some(ReasoningSummary::Concise),
+                    })
                     .instructions(self.instructions.clone());
             }
         }
@@ -146,15 +152,12 @@ impl OpenAIResponsesHandler {
         }
 
         if !function_calls.is_empty() {
-            let results = futures::future::join_all(
-                tool_call_receivers
-                    .into_iter()
-                    .map(|rx| async move {
-                        let res = rx.await.unwrap();
-                        (res.id, res.value)
-                    }),
-            )
-            .await;
+            let results =
+                futures::future::join_all(tool_call_receivers.into_iter().map(|rx| async move {
+                    let res = rx.await.unwrap();
+                    (res.id, res.value)
+                }))
+                .await;
 
             // Pass function call outputs back — the server reconstructs
             // the full context from previous_response_id
@@ -170,24 +173,21 @@ impl OpenAIResponsesHandler {
                 })
                 .collect();
 
-            return self.inner_send_message(Some(InputParam::Items(input_items))).await;
+            return self
+                .inner_send_message(Some(InputParam::Items(input_items)))
+                .await;
         }
 
         Ok(assistant_res_buf.join(""))
     }
 
     fn handle_agent_loop_state(&mut self, name: &str, args: &Value) {
-        if name != "set_agent_loop_state" { return; }
+        if name != "set_agent_loop_state" {
+            return;
+        }
 
         match args.get("state").and_then(Value::as_str) {
-            Some("continue") => {
-                let reason = args
-                    .get("continue_reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                self.loop_state = AgentLoopState::Continue(reason);
-            }
+            Some("continue") => self.loop_state = AgentLoopState::Continue,
             Some("done") | None => {
                 // If the model responds with a state that isn't supported
                 // we should just end to avoid infinite loop
@@ -197,9 +197,7 @@ impl OpenAIResponsesHandler {
                 self.loop_state = AgentLoopState::Done;
             }
         }
-
     }
-
 }
 
 #[async_trait]
@@ -211,7 +209,7 @@ impl ChatHandler for OpenAIResponsesHandler {
         let input = InputParam::Text(message.to_string());
         self.inner_send_message(Some(input)).await?;
 
-        while let AgentLoopState::Continue(_) = &self.loop_state {
+        while let AgentLoopState::Continue = &self.loop_state {
             self.loop_state = AgentLoopState::Done;
             self.inner_send_message(None).await?;
         }
@@ -228,9 +226,5 @@ impl ChatHandler for OpenAIResponsesHandler {
             .into_iter()
             .map(|t| Tool::Function(t.into()))
             .collect();
-    }
-
-    fn set_continue(&mut self) {
-        self.loop_state = AgentLoopState::Continue("".to_string());
     }
 }

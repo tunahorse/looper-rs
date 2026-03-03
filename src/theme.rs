@@ -23,7 +23,10 @@ impl Theme {
     }
 
     pub fn greeting(&self) -> String {
-        format!("{}\n", self.greeting.apply_to("\u{1F980} Welcome to Looper.rs"))
+        format!(
+            "{}\n",
+            self.greeting.apply_to("\u{1F980} Welcome to Looper.rs")
+        )
     }
 
     pub fn prompt(&self) -> String {
@@ -31,14 +34,15 @@ impl Theme {
     }
 
     pub fn separator_line(&self) -> String {
-        self.separator.apply_to("────────────────────────────────").to_string()
+        self.separator
+            .apply_to("────────────────────────────────")
+            .to_string()
     }
 
     pub fn tool_spinner(&self, name: &str) -> ProgressBar {
         let sp = ProgressBar::new_spinner();
         sp.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&["▖", "▘", "▝", "▗", "▚", "▞", ""])
+            ProgressStyle::default_spinner().tick_strings(&["▖", "▘", "▝", "▗", "▚", "▞", ""]),
         );
         sp.set_message(self.tool_spinner.apply_to(name).to_string());
         sp.enable_steady_tick(Duration::from_millis(80));
@@ -51,7 +55,7 @@ impl Theme {
             ProgressStyle::default_spinner()
                 .tick_strings(&["·  ", "·· ", "···", " ··", "  ·", "   "])
                 .template("{spinner} thinking")
-                .unwrap()
+                .unwrap(),
         );
         sp.enable_steady_tick(Duration::from_millis(200));
         sp

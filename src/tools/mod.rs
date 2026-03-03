@@ -1,18 +1,18 @@
-pub mod set_agent_loop_state;
-pub mod read_file;
-pub mod write_file;
-pub mod list_directory;
-pub mod grep;
 pub mod find_files;
+pub mod grep;
+pub mod list_directory;
+pub mod read_file;
+pub mod set_agent_loop_state;
+pub mod write_file;
 
 use std::collections::HashMap;
 
-pub use set_agent_loop_state::*;
-pub use read_file::*;
-pub use write_file::*;
-pub use list_directory::*;
-pub use grep::*;
 pub use find_files::*;
+pub use grep::*;
+pub use list_directory::*;
+pub use read_file::*;
+pub use set_agent_loop_state::*;
+pub use write_file::*;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ pub trait LooperTool: Send + Sync {
 }
 
 pub struct LooperTools {
-    tools: HashMap<String, Box<dyn LooperTool>>
+    tools: HashMap<String, Box<dyn LooperTool>>,
 }
 
 impl LooperTools {
@@ -38,22 +38,25 @@ impl LooperTools {
         tools.insert("list_directory".to_string(), Box::new(ListDirectoryTool));
         tools.insert("grep".to_string(), Box::new(GrepTool));
         tools.insert("find_files".to_string(), Box::new(FindFilesTool));
-        tools.insert("set_agent_loop_state".to_string(), Box::new(SetAgentLoopStateTool));
+        tools.insert(
+            "set_agent_loop_state".to_string(),
+            Box::new(SetAgentLoopStateTool),
+        );
 
-        LooperTools { 
-            tools
-        }
+        LooperTools { tools }
     }
 
     pub fn get_tools(&self) -> Vec<LooperToolDefinition> {
-        self.tools.values().into_iter().map(|t| t.tool()).collect::<Vec<LooperToolDefinition>>()
+        self.tools
+            .values()
+            .map(|t| t.tool())
+            .collect::<Vec<LooperToolDefinition>>()
     }
 
     pub async fn run_tool(&self, name: &str, args: Value) -> Value {
         match self.tools.get(name) {
             Some(tool) => tool.execute(&args).await,
-            None => json!({"error": format!("Unknown function: {}", name)})
-        } 
+            None => json!({"error": format!("Unknown function: {}", name)}),
+        }
     }
 }
-
