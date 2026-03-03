@@ -4,9 +4,9 @@
 
 [Demo video (MP4)](./assets/Demo.mp4)
 
-A lightweight, barebones agentic loop that can be plugged into any chat interface (CLI, web, desktop, etc).
+A very barebones, lightweight, agentic loop made to be plugged into any UI chat interface (CLI, web, desktop, etc).
 
-The purpose of this is to avoid needing Claude Code/Codex CLI subprocesses per user chat session, which can become unscalable with even a few dozen sessions.
+The purpose of this is to avoid having to us Claude Code/Codex CLI which require sub processes of themselves to be spawned per user chat session. This become unscalable quickly with even just a few dozen sessions.
 
 This tool is *not* meant to be as robust as Claude Code/Codex. It's meant to be a lighter weight, more practical solution to their heavy SDKs.
 
@@ -57,11 +57,8 @@ sequenceDiagram
 ## Setup
 
 ```sh
-cat > .env <<EOF
-OPENAI_API_KEY=your_api_key_here
-LOOPER_API_MODE=responses
-LOOPER_MODEL=gpt-5.2
-EOF
+cp .env.example .env
+# Add your OPENAI_API_KEY to .env
 ```
 
 ## Usage
@@ -69,12 +66,3 @@ EOF
 ```sh
 cargo run
 ```
-
-## Documentation
-
-Full documentation is in [`/docs`](./docs/README.md), organized by concern:
-
-- Getting started and configuration
-- Architecture and message flow
-- Handler implementations
-- Built-in tools and extension guides
