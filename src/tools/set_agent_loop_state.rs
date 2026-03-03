@@ -26,7 +26,15 @@ impl LooperTool for SetAgentLoopStateTool {
     }
 
     async fn execute(&self, args: &Value) -> Value {
-        let reason = args["continue_reason"].to_string();
-        return json!({ "State": format!("continuing with reason: {}", reason) });
+        let state = args.get("state").and_then(Value::as_str).unwrap_or("done");
+        let continue_reason = args.get("continue_reason").and_then(Value::as_str).unwrap_or("");
+
+        match state {
+            "continue" => json!({
+                "state": "continue",
+                "continue_reason": continue_reason
+            }),
+            _ => json!({ "state": "done" }),
+        }
     }
 }

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    services::{ChatHandler, openai_responses::OpenAIResponsesHandler},
+    services::{
+        ChatHandler, openai_completions::OpenAIChatHandler,
+        openai_responses::OpenAIResponsesHandler,
+    },
     tools::LooperTools,
     types::{HandlerToLooperMessage, LooperToHandlerToolCallResult, LooperToInterfaceMessage},
 };
@@ -30,12 +33,16 @@ impl Looper {
 
         let system_message = get_system_message();
 
-        // TODO: Pass in a provider enum and dynamically create handler
-        // For now this is unneccessary as we only have 1 supported provider
-        let mut handler = Box::new(OpenAIResponsesHandler::new(
-            handler_looper_sender,
-            &system_message,
-        )?);
+        let api_mode = std::env::var("LOOPER_API_MODE").unwrap_or_else(|_| "responses".to_string());
+
+        let mut handler: Box<dyn ChatHandler> = if api_mode == "chat_completions" {
+            Box::new(OpenAIChatHandler::new(handler_looper_sender, &system_message)?)
+        } else {
+            Box::new(OpenAIResponsesHandler::new(
+                handler_looper_sender,
+                &system_message,
+            )?)
+        };
 
         // get and set available tools
         let tools = LooperTools::new();

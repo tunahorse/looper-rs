@@ -60,8 +60,11 @@ impl OpenAIChatHandler {
 
     #[async_recursion]
     async fn inner_send_message(&mut self) -> Result<String> {
+        let model = std::env::var("LOOPER_MODEL")
+            .or_else(|_| std::env::var("ALCHEMY_MODEL"))
+            .unwrap_or_else(|_| "gpt-5.2".to_string());
         let request = CreateChatCompletionRequestArgs::default()
-            .model("gpt-5.2")
+            .model(model)
             .max_completion_tokens(50000u32)
             .messages(self.messages.clone())
             .tools(self.tools.clone())
@@ -199,15 +202,21 @@ impl OpenAIChatHandler {
     fn handle_agent_loop_state(&mut self, name: &str, args: &Value) {
         if name != "set_agent_loop_state" { return; }
 
-        match args.get("state") {
-            Some(s) => {
-                if s == "done" {
-                    self.loop_state = AgentLoopState::Done;
-                }
-            },
-            None => {
+        match args.get("state").and_then(Value::as_str) {
+            Some("continue") => {
+                let reason = args
+                    .get("continue_reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.loop_state = AgentLoopState::Continue(reason);
+            }
+            Some("done") | None => {
                 // If the model responds with a state that isn't supported
                 // we should just end to avoid infinite loop
+                self.loop_state = AgentLoopState::Done;
+            }
+            Some(_) => {
                 self.loop_state = AgentLoopState::Done;
             }
         }
@@ -217,8 +226,8 @@ impl OpenAIChatHandler {
 #[async_trait]
 impl ChatHandler for OpenAIChatHandler {
     async fn send_message(&mut self, message: &str) -> Result<()> {
-        // reset loop state to continue on each message send
-        self.loop_state = AgentLoopState::Continue("".to_string());
+        // Default to ending the turn unless the model explicitly requests continue.
+        self.loop_state = AgentLoopState::Done;
 
         let message = ChatCompletionRequestUserMessageArgs::default()
             .content(message)
@@ -237,6 +246,7 @@ impl ChatHandler for OpenAIChatHandler {
         self.messages.push(message);
 
         while let AgentLoopState::Continue(_) = &self.loop_state {
+            self.loop_state = AgentLoopState::Done;
             let response = self.inner_send_message().await?;
 
             let message = ChatCompletionRequestAssistantMessageArgs::default()

@@ -43,11 +43,14 @@ impl OpenAIResponsesHandler {
 
     #[async_recursion]
     async fn inner_send_message(&mut self, input: Option<InputParam>) -> Result<String> {
+        let model = std::env::var("LOOPER_MODEL")
+            .or_else(|_| std::env::var("ALCHEMY_MODEL"))
+            .unwrap_or_else(|_| "gpt-5.2".to_string());
         let mut builder = CreateResponseArgs::default();
         match input {
             Some(i) => {
                 builder
-                    .model("gpt-5.2")
+                    .model(model.clone())
                     .input(i)
                     .tools(self.tools.clone())
                     .reasoning(Reasoning {
@@ -59,7 +62,7 @@ impl OpenAIResponsesHandler {
             },
             None => {
                 builder
-                    .model("gpt-5.2")
+                    .model(model)
                     .tools(self.tools.clone())
                     .reasoning(Reasoning {
                           effort: Some(ReasoningEffort::High),
@@ -176,16 +179,22 @@ impl OpenAIResponsesHandler {
     fn handle_agent_loop_state(&mut self, name: &str, args: &Value) {
         if name != "set_agent_loop_state" { return; }
 
-        match args.get("state") {
-            Some(s) => {
-                if s == "done" {
-                    self.loop_state = AgentLoopState::Done; 
-                }
-            },
-            None => {
+        match args.get("state").and_then(Value::as_str) {
+            Some("continue") => {
+                let reason = args
+                    .get("continue_reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.loop_state = AgentLoopState::Continue(reason);
+            }
+            Some("done") | None => {
                 // If the model responds with a state that isn't supported
                 // we should just end to avoid infinite loop
-                self.loop_state = AgentLoopState::Done; 
+                self.loop_state = AgentLoopState::Done;
+            }
+            Some(_) => {
+                self.loop_state = AgentLoopState::Done;
             }
         }
 
@@ -196,13 +205,14 @@ impl OpenAIResponsesHandler {
 #[async_trait]
 impl ChatHandler for OpenAIResponsesHandler {
     async fn send_message(&mut self, message: &str) -> Result<()> {
-        // reset loop state to continue on each message send
-        self.loop_state = AgentLoopState::Continue("".to_string());
+        // Default to ending the turn unless the model explicitly requests continue.
+        self.loop_state = AgentLoopState::Done;
 
         let input = InputParam::Text(message.to_string());
         self.inner_send_message(Some(input)).await?;
 
         while let AgentLoopState::Continue(_) = &self.loop_state {
+            self.loop_state = AgentLoopState::Done;
             self.inner_send_message(None).await?;
         }
 
