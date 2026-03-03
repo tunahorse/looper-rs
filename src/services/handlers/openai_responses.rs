@@ -4,8 +4,8 @@ use async_openai::{
     types::{
         chat::ReasoningEffort,
         responses::{
-            CreateResponseArgs, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
-            InputItem, InputParam, Item, OutputItem, Reasoning, ReasoningSummary,
+            CreateResponse, CreateResponseArgs, FunctionCallOutput, FunctionCallOutputItemParam,
+            FunctionToolCall, InputItem, InputParam, Item, OutputItem, Reasoning, ReasoningSummary,
             ResponseStreamEvent, Tool,
         },
     },
@@ -21,8 +21,11 @@ use tokio::sync::{mpsc::Sender, oneshot};
 
 use crate::{
     looper::AgentLoopState,
-    services::ChatHandler,
-    types::{HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition},
+    services::{ChatHandler, handlers::openai_compatible::openai_compatible_client},
+    types::{
+        HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToHandlerToolCallResult,
+        LooperToolDefinition,
+    },
 };
 
 pub struct OpenAIResponsesHandler {
@@ -36,7 +39,7 @@ pub struct OpenAIResponsesHandler {
 
 impl OpenAIResponsesHandler {
     pub fn new(sender: Sender<HandlerToLooperMessage>, system_message: &str) -> Result<Self> {
-        let client = Client::new();
+        let client = openai_compatible_client()?;
 
         Ok(OpenAIResponsesHandler {
             client,
@@ -48,11 +51,11 @@ impl OpenAIResponsesHandler {
         })
     }
 
-    #[async_recursion]
-    async fn inner_send_message(&mut self, input: Option<InputParam>) -> Result<String> {
+    fn build_request(&self, input: Option<InputParam>) -> Result<CreateResponse> {
         let model = std::env::var("LOOPER_MODEL")
             .or_else(|_| std::env::var("ALCHEMY_MODEL"))
             .unwrap_or_else(|_| "gpt-5.2".to_string());
+
         let mut builder = CreateResponseArgs::default();
         match input {
             Some(i) => {
@@ -83,10 +86,47 @@ impl OpenAIResponsesHandler {
         }
 
         let request = builder.build()?;
+        Ok(request)
+    }
+
+    async fn queue_function_call(
+        &mut self,
+        fc: FunctionToolCall,
+        tool_call_receivers: &mut Vec<oneshot::Receiver<LooperToHandlerToolCallResult>>,
+    ) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        let args = serde_json::from_str(&fc.arguments)?;
+
+        self.handle_agent_loop_state(&fc.name, &args);
+
+        let tcr = HandlerToLooperToolCallRequest {
+            id: fc.call_id.clone(),
+            name: fc.name.clone(),
+            args,
+            tool_result_channel: tx,
+        };
+
+        self.sender
+            .send(HandlerToLooperMessage::ToolCallRequest(tcr))
+            .await
+            .unwrap();
+
+        tool_call_receivers.push(rx);
+        Ok(())
+    }
+
+    async fn stream_response(
+        &mut self,
+        input: Option<InputParam>,
+    ) -> Result<(
+        Vec<String>,
+        Vec<oneshot::Receiver<LooperToHandlerToolCallResult>>,
+        Option<String>,
+    )> {
+        let request = self.build_request(input)?;
         let mut stream = self.client.responses().create_stream(request).await?;
 
         let mut assistant_res_buf = Vec::new();
-        let mut function_calls: Vec<FunctionToolCall> = Vec::new();
         let mut tool_call_receivers = Vec::new();
         let mut response_id: Option<String> = None;
 
@@ -115,25 +155,8 @@ impl OpenAIResponsesHandler {
                 }
                 Ok(ResponseStreamEvent::ResponseOutputItemDone(item_done)) => {
                     if let OutputItem::FunctionCall(fc) = item_done.item {
-                        let (tx, rx) = oneshot::channel();
-                        let args = serde_json::from_str(&fc.arguments)?;
-
-                        self.handle_agent_loop_state(&fc.name, &args);
-
-                        let tcr = HandlerToLooperToolCallRequest {
-                            id: fc.call_id.clone(),
-                            name: fc.name.clone(),
-                            args,
-                            tool_result_channel: tx,
-                        };
-
-                        self.sender
-                            .send(HandlerToLooperMessage::ToolCallRequest(tcr))
-                            .await
-                            .unwrap();
-
-                        tool_call_receivers.push(rx);
-                        function_calls.push(fc);
+                        self.queue_function_call(fc, &mut tool_call_receivers)
+                            .await?;
                     }
                 }
                 Ok(ResponseStreamEvent::ResponseCompleted(completed)) => {
@@ -146,33 +169,45 @@ impl OpenAIResponsesHandler {
             }
         }
 
-        // Update previous_response_id for conversation continuity
+        Ok((assistant_res_buf, tool_call_receivers, response_id))
+    }
+
+    async fn collect_tool_results(
+        tool_call_receivers: Vec<oneshot::Receiver<LooperToHandlerToolCallResult>>,
+    ) -> Vec<(String, Value)> {
+        futures::future::join_all(tool_call_receivers.into_iter().map(|rx| async move {
+            let res = rx.await.unwrap();
+            (res.id, res.value)
+        }))
+        .await
+    }
+
+    fn build_function_output_items(results: Vec<(String, Value)>) -> Vec<InputItem> {
+        results
+            .into_iter()
+            .map(|(call_id, value)| {
+                InputItem::Item(Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                    call_id,
+                    output: FunctionCallOutput::Text(value.to_string()),
+                    id: None,
+                    status: None,
+                }))
+            })
+            .collect()
+    }
+
+    #[async_recursion]
+    async fn inner_send_message(&mut self, input: Option<InputParam>) -> Result<String> {
+        let (assistant_res_buf, tool_call_receivers, response_id) =
+            self.stream_response(input).await?;
+
         if let Some(id) = response_id {
             self.previous_response_id = Some(id);
         }
 
-        if !function_calls.is_empty() {
-            let results =
-                futures::future::join_all(tool_call_receivers.into_iter().map(|rx| async move {
-                    let res = rx.await.unwrap();
-                    (res.id, res.value)
-                }))
-                .await;
-
-            // Pass function call outputs back — the server reconstructs
-            // the full context from previous_response_id
-            let input_items: Vec<InputItem> = results
-                .into_iter()
-                .map(|(call_id, value)| {
-                    InputItem::Item(Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                        call_id,
-                        output: FunctionCallOutput::Text(value.to_string()),
-                        id: None,
-                        status: None,
-                    }))
-                })
-                .collect();
-
+        let results = Self::collect_tool_results(tool_call_receivers).await;
+        if !results.is_empty() {
+            let input_items = Self::build_function_output_items(results);
             return self
                 .inner_send_message(Some(InputParam::Items(input_items)))
                 .await;
