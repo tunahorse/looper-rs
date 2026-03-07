@@ -11,7 +11,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "async-anthropic"
 version = "0.6.0"
-source = "git+https://github.com/danwritecode/async-anthropic#45af358fbd36ad7f0aa1c425c8de9b59d8907217"
+source = "git+https://github.com/danwritecode/async-anthropic#bddf804695a875c74ccf5aaa921202492d9225ee"
 dependencies = [
  "backoff",
  "derive_builder",

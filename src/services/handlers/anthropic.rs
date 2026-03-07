@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use async_anthropic::{
-    Client, 
+    Client,
     types::{
-        ContentBlockDelta, CreateMessagesRequestBuilder, 
-        Message, MessageBuilder, MessageContent, MessageRole, 
-        MessagesStreamEvent, ToolResultBuilder, ToolUseBuilder
+        ContentBlockDelta, CreateMessagesRequestBuilder, Message, 
+        MessageContent, MessageContentList, MessageRole, MessagesStreamEvent, 
+        Thinking, Tool, ToolResultBuilder
     }
 };
 
@@ -19,7 +19,6 @@ use tokio::sync::{
     oneshot,
 };
 
-use serde_json::Value;
 
 use crate::{services::ChatHandler, types::{
     HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition,
@@ -59,6 +58,8 @@ impl AnthropicHandler {
             .system(self.system_message.clone())
             .messages(self.messages.clone())
             .tools(self.tools.clone())
+            .max_tokens(16384)
+            .thinking(Thinking::Enabled { budget_tokens: 2048 })
             .build()?;
 
 
@@ -66,6 +67,7 @@ impl AnthropicHandler {
         let mut tool_call_receivers = Vec::new();
         let mut content_blocks = HashMap::new();
         let mut tool_input_bufs: HashMap<usize, String> = HashMap::new();
+        let mut signatures: HashMap<usize, String> = HashMap::new();
 
         while let Some(result) = stream.next().await {
             match result {
@@ -86,6 +88,23 @@ impl AnthropicHandler {
                                                 .await?;
                                         }
                                     },
+                                    ContentBlockDelta::ThinkingDelta { thinking } => {
+                                        if let MessageContent::Thinking(t) = cb {
+                                            t.thinking += &thinking;
+
+                                            self.sender
+                                                .send(HandlerToLooperMessage::Thinking(thinking))
+                                                .await?;
+                                        }
+                                    },
+                                    ContentBlockDelta::SignatureDelta { signature } => {
+                                        if let MessageContent::Thinking(_) = cb {
+                                            signatures
+                                                .entry(index)
+                                                .or_default()
+                                                .push_str(&signature);
+                                        }
+                                    },
                                     ContentBlockDelta::InputJsonDelta { partial_json } => {
                                         if let MessageContent::ToolUse(_) = cb {
                                             tool_input_bufs
@@ -93,8 +112,7 @@ impl AnthropicHandler {
                                                 .or_default()
                                                 .push_str(&partial_json);
                                         }
-                                    },
-                                    _ => {}
+                                    }
                                 }
                             }
                         },
@@ -105,53 +123,6 @@ impl AnthropicHandler {
                                     if !raw_input.is_empty() {
                                         t.input = serde_json::from_str(&raw_input)?;
                                     }
-                                }
-                            }
-
-                            if let Some(cb) = content_blocks.get(&index) {
-                                match cb {
-                                    MessageContent::ToolUse(t) => {
-                                        let id = t.id.clone();
-                                        let name = t.name.clone();
-                                        let args = t.input.clone();
-
-                                        let message = MessageBuilder::default()
-                                            .role(MessageRole::Assistant)
-                                            .content(
-                                                ToolUseBuilder::default()
-                                                    .id(&id)
-                                                    .name(&name)
-                                                    .input(args.clone())
-                                                    .build()?
-                                            )
-                                            .build()?;
-
-                                        self.messages.push(message);
-
-                                        let (tx, rx) = oneshot::channel();
-
-                                        let tcr = HandlerToLooperToolCallRequest {
-                                            id,
-                                            name,
-                                            args,
-                                            tool_result_channel: tx,
-                                        };
-
-                                        self.sender
-                                            .send(HandlerToLooperMessage::ToolCallRequest(tcr))
-                                            .await?;
-
-                                        tool_call_receivers.push(rx);
-                                    },
-                                    MessageContent::Text(t) => {
-                                        let message = MessageBuilder::default()
-                                            .role(MessageRole::Assistant)
-                                            .content(t.text.clone())
-                                            .build()?;
-
-                                        self.messages.push(message);
-                                    }
-                                    _ => ()
                                 }
                             }
                         },
@@ -165,7 +136,50 @@ impl AnthropicHandler {
             }
         }
 
+        // Build a single assistant message from all accumulated content blocks
+        let mut sorted_indices: Vec<usize> = content_blocks.keys().copied().collect();
+        sorted_indices.sort();
 
+        let mut assistant_content: Vec<MessageContent> = Vec::new();
+        for index in &sorted_indices {
+            if let Some(mut block) = content_blocks.remove(index) {
+                // Inject signature into thinking blocks
+                if let MessageContent::Thinking(ref mut t) = block {
+                    if let Some(sig) = signatures.remove(index) {
+                        t.signature = Some(sig);
+                    }
+                }
+
+                // Collect tool call requests
+                if let MessageContent::ToolUse(ref t) = block {
+                    let (tx, rx) = oneshot::channel();
+
+                    let tcr = HandlerToLooperToolCallRequest {
+                        id: t.id.clone(),
+                        name: t.name.clone(),
+                        args: t.input.clone(),
+                        tool_result_channel: tx,
+                    };
+
+                    self.sender
+                        .send(HandlerToLooperMessage::ToolCallRequest(tcr))
+                        .await?;
+
+                    tool_call_receivers.push(rx);
+                }
+
+                assistant_content.push(block);
+            }
+        }
+
+        if !assistant_content.is_empty() {
+            self.messages.push(Message {
+                role: MessageRole::Assistant,
+                content: MessageContentList(assistant_content),
+            });
+        }
+
+        // Wait for all tool call executions to complete
         let results =
             futures::future::join_all(tool_call_receivers.into_iter().map(|rx| async move {
                 let res = rx.await.unwrap();
@@ -173,29 +187,19 @@ impl AnthropicHandler {
             }))
             .await;
 
-        // Wait for all tool call executions to complete (outside the stream loop)
         if !results.is_empty() {
-            let mut tool_responses = Vec::new();
-
-            for r in results {
-                let (tool_call_id, response) = r;
-                tool_responses.push((tool_call_id, response));
-            }
-
-            // Add tool response messages
-            for (tool_call_id, response) in tool_responses {
-                let message = MessageBuilder::default()
-                    .role(MessageRole::User)
-                    .content(
-                        ToolResultBuilder::default()
-                            .tool_use_id(&tool_call_id)
-                            .content(response.to_string())
-                            .build()?
-                    )
-                    .build()?;
-
-                self.messages.push(message);
-
+            for (tool_call_id, response) in results {
+                self.messages.push(Message {
+                    role: MessageRole::User,
+                    content: MessageContentList(vec![
+                        MessageContent::ToolResult(
+                            ToolResultBuilder::default()
+                                .tool_use_id(&tool_call_id)
+                                .content(response.to_string())
+                                .build()?
+                        )
+                    ]),
+                });
             }
 
             return self.inner_send_message().await;
@@ -208,12 +212,10 @@ impl AnthropicHandler {
 #[async_trait]
 impl ChatHandler for AnthropicHandler {
     async fn send_message(&mut self, message: &str) -> Result<()> {
-        let message = MessageBuilder::default()
-            .role(MessageRole::User)
-            .content(message)
-            .build()?;
-
-        self.messages.push(message);
+        self.messages.push(Message {
+            role: MessageRole::User,
+            content: MessageContentList(vec![MessageContent::from(message)]),
+        });
 
         self.inner_send_message().await?;
 
