@@ -11,8 +11,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "async-anthropic"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b55f84bfda9889ff5e5052bbe16e681e90142eeb28e4c61cf380b1fed104dc73"
+source = "git+https://github.com/danwritecode/async-anthropic#45af358fbd36ad7f0aa1c425c8de9b59d8907217"
 dependencies = [
  "backoff",
  "derive_builder",

@@ -30,7 +30,7 @@ pub struct AnthropicHandler {
     system_message: String,
     messages: Vec<Message>,
     sender: Sender<HandlerToLooperMessage>,
-    tools: Vec<serde_json::Map<String, Value>>,
+    tools: Vec<Tool>,
 }
 
 impl AnthropicHandler {
@@ -93,7 +93,8 @@ impl AnthropicHandler {
                                                 .or_default()
                                                 .push_str(&partial_json);
                                         }
-                                    }
+                                    },
+                                    _ => {}
                                 }
                             }
                         },
