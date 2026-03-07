@@ -6,7 +6,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
 
-use loopin_rs::{
+use looper::{
     looper::Looper,
     tools::{LooperTool, LooperTools},
     types::{Handlers, LooperToInterfaceMessage, LooperToolDefinition},
