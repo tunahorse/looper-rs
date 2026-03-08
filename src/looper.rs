@@ -7,15 +7,10 @@ use crate::{
 };
 use anyhow::Result;
 use serde_json::{Value, json};
-use tokio::sync::{
-    Mutex,
-    mpsc::{self, Receiver, Sender},
-};
+use tokio::sync::mpsc::{self, Sender};
 
 pub struct Looper {
     handler: Box<dyn ChatHandler>,
-    looper_interface_sender: Sender<LooperToInterfaceMessage>,
-    handler_looper_receiver: Arc<Mutex<Receiver<HandlerToLooperMessage>>>,
     tools: Option<Arc<dyn LooperTools>>,
     message_history: Option<Value>
 }
@@ -33,9 +28,7 @@ impl Looper {
         tools: Option<Arc<dyn LooperTools>>,
         looper_interface_sender: Sender<LooperToInterfaceMessage>
     ) -> Result<Self> {
-        // TODO: Set this to something reasonable, totally just guessed at 10k
-        let (handler_looper_sender, handler_looper_receiver) = mpsc::channel(10000);
-        let handler_looper_receiver = Arc::new(Mutex::new(handler_looper_receiver));
+        let (handler_looper_sender, mut handler_looper_receiver) = mpsc::channel(10000);
 
         let handler: Box<dyn ChatHandler> = match handler_type {
             Handlers::OpenAICompletions(m) => {
@@ -70,23 +63,12 @@ impl Looper {
             }
         };
 
-        Ok(Looper {
-            handler,
-            message_history,
-            looper_interface_sender,
-            handler_looper_receiver,
-            tools,
-        })
-    }
-
-    pub async fn send(&mut self, message: &str) -> Result<Value> {
-        let l_i_s = self.looper_interface_sender.clone();
-        let h_l_r = self.handler_looper_receiver.clone();
-        let tools = self.tools.clone();
-
+        // Spawn a single long-lived listener task that forwards messages
+        // from the handler to the interface and executes tool calls.
+        let l_i_s = looper_interface_sender;
+        let tools_clone = tools.clone();
         tokio::spawn(async move {
-            let mut h_l_r = h_l_r.lock().await;
-            while let Some(message) = h_l_r.recv().await {
+            while let Some(message) = handler_looper_receiver.recv().await {
                 match message {
                     HandlerToLooperMessage::Assistant(m) => {
                         l_i_s
@@ -115,11 +97,10 @@ impl Looper {
                         let response = if tc.name == "set_agent_loop_state" {
                             SetAgentLoopStateTool.execute(&tc.args).await
                         } else {
-                            match &tools {
+                            match &tools_clone {
                                 Some(t) => t.run_tool(&tc.name, tc.args).await,
                                 None => json!({"Error": "Unsupported tool called"})
                             }
-                            
                         };
 
                         let tc_result = LooperToHandlerToolCallResult {
@@ -134,13 +115,19 @@ impl Looper {
                             .send(LooperToInterfaceMessage::TurnComplete)
                             .await
                             .unwrap();
-
-                        break; // to ensure the spawned task gets killed
                     }
                 }
             }
         });
 
+        Ok(Looper {
+            handler,
+            message_history,
+            tools,
+        })
+    }
+
+    pub async fn send(&mut self, message: &str) -> Result<Value> {
         let messages = self.handler.send_message(self.message_history.clone(), message).await?;
 
         Ok(messages)
