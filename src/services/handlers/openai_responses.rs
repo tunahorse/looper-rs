@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc::Sender, oneshot};
 
 use crate::{
-    looper::AgentLoopState, services::ChatHandler, types::{HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition}
+    looper_stream::AgentLoopState, services::StreamingChatHandler, types::{HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition}
 };
 
 pub struct OpenAIResponsesHandler {
@@ -203,7 +203,7 @@ impl OpenAIResponsesHandler {
 }
 
 #[async_trait]
-impl ChatHandler for OpenAIResponsesHandler {
+impl StreamingChatHandler for OpenAIResponsesHandler {
     async fn send_message(&mut self, message: &str) -> Result<Value> {
         // reset loop state to continue on each message send
         self.loop_state = AgentLoopState::Done;
