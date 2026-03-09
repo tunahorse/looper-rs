@@ -21,7 +21,7 @@ use tokio::sync::{
 };
 
 
-use crate::{services::ChatHandler, types::{
+use crate::{services::StreamingChatHandler, types::{
     HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition,
 }};
 
@@ -63,7 +63,7 @@ impl AnthropicHandler {
             .messages(self.messages.clone())
             .tools(self.tools.clone())
             .max_tokens(16384)
-            .thinking(Thinking::Enabled { budget_tokens: 2048 })
+            .thinking(Thinking::Adaptive)
             .build()?;
 
 
@@ -225,7 +225,7 @@ impl AnthropicHandler {
 }
 
 #[async_trait]
-impl ChatHandler for AnthropicHandler {
+impl StreamingChatHandler for AnthropicHandler {
     async fn send_message(
         &mut self, 
         message_history: Option<Value>,

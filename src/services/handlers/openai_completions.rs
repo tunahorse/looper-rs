@@ -23,7 +23,7 @@ use tokio::sync::{
 
 use serde_json::Value;
 
-use crate::{looper::AgentLoopState, services::ChatHandler, types::{
+use crate::{looper_stream::AgentLoopState, services::StreamingChatHandler, types::{
     HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition,
 }};
 
@@ -218,7 +218,7 @@ impl OpenAIChatHandler {
 }
 
 #[async_trait]
-impl ChatHandler for OpenAIChatHandler {
+impl StreamingChatHandler for OpenAIChatHandler {
     async fn send_message(
         &mut self, 
         message_history: Option<Value>,
