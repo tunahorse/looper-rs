@@ -965,6 +965,7 @@ dependencies = [
  "async-recursion",
  "async-trait",
  "console",
+ "derive_builder",
  "dotenv",
  "futures",
  "indicatif",

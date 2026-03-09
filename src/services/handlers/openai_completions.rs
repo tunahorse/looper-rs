@@ -3,7 +3,7 @@ use async_openai::{
     config::OpenAIConfig,
     types::chat::{
         ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
-        ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageArgs,
+        ChatCompletionRequestAssistantMessage,
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessageArgs,
         ChatCompletionTools, CreateChatCompletionRequestArgs, FinishReason,
@@ -23,7 +23,7 @@ use tokio::sync::{
 
 use serde_json::Value;
 
-use crate::{looper_stream::AgentLoopState, services::StreamingChatHandler, types::{
+use crate::{services::StreamingChatHandler, types::{
     HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition,
 }};
 
@@ -33,7 +33,6 @@ pub struct OpenAIChatHandler {
     messages: Vec<ChatCompletionRequestMessage>,
     sender: Sender<HandlerToLooperMessage>,
     tools: Vec<ChatCompletionTools>,
-    loop_state: AgentLoopState
 }
 
 impl OpenAIChatHandler {
@@ -57,7 +56,6 @@ impl OpenAIChatHandler {
             messages,
             sender,
             tools,
-            loop_state: AgentLoopState::Continue("".to_string())
         })
     }
 
@@ -120,14 +118,12 @@ impl OpenAIChatHandler {
 
                         // When tool calls are complete, start executing them immediately
                         if matches!(choice.finish_reason, Some(FinishReason::ToolCalls)) {
-                            // Spawn execution tasks for all collected tool calls
                             for tool_call in tool_calls.iter() {
                                 let id = tool_call.id.clone();
                                 let name = tool_call.function.name.clone();
                                 let args: Value =
                                     serde_json::from_str(&tool_call.function.arguments.clone())?;
 
-                                self.handle_agent_loop_state(&name, &args);
                                 let (tx, rx) = oneshot::channel();
 
                                 let tcr = HandlerToLooperToolCallRequest {
@@ -198,29 +194,12 @@ impl OpenAIChatHandler {
 
         Ok(assistant_res_buf.join(""))
     }
-
-    fn handle_agent_loop_state(&mut self, name: &str, args: &Value) {
-        if name != "set_agent_loop_state" { return; }
-
-        match args.get("state") {
-            Some(s) => {
-                if s == "done" {
-                    self.loop_state = AgentLoopState::Done;
-                }
-            },
-            None => {
-                // If the model responds with a state that isn't supported
-                // we should just end to avoid infinite loop
-                self.loop_state = AgentLoopState::Done;
-            }
-        }
-    }
 }
 
 #[async_trait]
 impl StreamingChatHandler for OpenAIChatHandler {
     async fn send_message(
-        &mut self, 
+        &mut self,
         message_history: Option<Value>,
         message: &str
     ) -> Result<Value> {
@@ -229,9 +208,6 @@ impl StreamingChatHandler for OpenAIChatHandler {
             self.messages = messages;
         }
 
-        // reset loop state to continue on each message send
-        self.loop_state = AgentLoopState::Continue("".to_string());
-
         let message = ChatCompletionRequestUserMessageArgs::default()
             .content(message)
             .build()?
@@ -239,25 +215,7 @@ impl StreamingChatHandler for OpenAIChatHandler {
 
         self.messages.push(message);
 
-        let response = self.inner_send_message().await?;
-
-        let message = ChatCompletionRequestAssistantMessageArgs::default()
-            .content(response.clone())
-            .build()?
-            .into();
-
-        self.messages.push(message);
-
-        while let AgentLoopState::Continue(_) = &self.loop_state {
-            let response = self.inner_send_message().await?;
-
-            let message = ChatCompletionRequestAssistantMessageArgs::default()
-                .content(response.clone())
-                .build()?
-                .into();
-
-            self.messages.push(message);
-        }
+        self.inner_send_message().await?;
 
         self.sender
             .send(HandlerToLooperMessage::TurnComplete)

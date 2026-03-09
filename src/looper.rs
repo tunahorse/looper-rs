@@ -31,7 +31,7 @@ impl Looper {
             Handlers::Anthropic(m) => {
                 let mut handler = AnthropicNonStreamingHandler::new(
                     &m,
-                    &get_anthropic_system_message(instructions.as_deref())?,
+                    &get_system_message(instructions.as_deref())?,
                 )?;
 
                 if let Some(t) = &tools {
@@ -43,7 +43,7 @@ impl Looper {
             Handlers::OpenAICompletions(m) => {
                 let mut handler = OpenAINonStreamingChatHandler::new(
                     &m,
-                    &get_openai_system_message(instructions.as_deref())?,
+                    &get_system_message(instructions.as_deref())?,
                 )?;
 
                 if let Some(t) = &tools {
@@ -89,10 +89,6 @@ fn render_system_message(template: &str, instructions: Option<&str>) -> Result<S
     Ok(tera.render("system_prompt", &ctx)?)
 }
 
-fn get_anthropic_system_message(instructions: Option<&str>) -> Result<String> {
-    render_system_message(include_str!("../prompts/system_prompt_anthropic.txt"), instructions)
-}
-
-fn get_openai_system_message(instructions: Option<&str>) -> Result<String> {
-    render_system_message(include_str!("../prompts/system_prompt_openai.txt"), instructions)
+fn get_system_message(instructions: Option<&str>) -> Result<String> {
+    render_system_message(include_str!("../prompts/system_prompt.txt"), instructions)
 }

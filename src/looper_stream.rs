@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     services::{StreamingChatHandler, anthropic::AnthropicHandler, openai_completions::OpenAIChatHandler},
-    tools::{LooperTool, LooperTools, SetAgentLoopStateTool},
+    tools::LooperTools,
     types::{HandlerToLooperMessage, Handlers, LooperToHandlerToolCallResult, LooperToInterfaceMessage},
 };
 use anyhow::Result;
@@ -13,12 +13,6 @@ use tokio::sync::mpsc::{self, Sender};
 pub struct LooperStream {
     handler: Box<dyn StreamingChatHandler>,
     message_history: Option<Value>
-}
-
-#[derive(Debug)]
-pub enum AgentLoopState {
-    Continue(String),
-    Done
 }
 
 impl LooperStream {
@@ -36,14 +30,11 @@ impl LooperStream {
                 let mut handler = OpenAIChatHandler::new(
                     handler_looper_sender,
                     &m,
-                    &get_openai_system_message(instructions.as_deref())?
+                    &get_system_message(instructions.as_deref())?
                 )?;
 
                 if let Some(t) = &tools {
-                    let mut tool_defs = t.get_tools();
-                    let set_agent_loop_state = SetAgentLoopStateTool;
-                    tool_defs.push(set_agent_loop_state.tool());
-                    handler.set_tools(tool_defs);
+                    handler.set_tools(t.get_tools());
                 }
 
                 Box::new(handler)
@@ -52,13 +43,12 @@ impl LooperStream {
                 let mut handler = AnthropicHandler::new(
                     handler_looper_sender,
                     &m,
-                    &get_anthropic_system_message(instructions.as_deref())?
+                    &get_system_message(instructions.as_deref())?
                 )?;
 
                 if let Some(t) = &tools {
                     handler.set_tools(t.get_tools());
                 }
-
 
                 Box::new(handler)
             }
@@ -101,13 +91,9 @@ impl LooperStream {
                             .await
                             .unwrap();
 
-                        let response = if tc.name == "set_agent_loop_state" {
-                            SetAgentLoopStateTool.execute(&tc.args).await
-                        } else {
-                            match &tools_clone {
-                                Some(t) => t.run_tool(&tc.name, tc.args).await,
-                                None => json!({"Error": "Unsupported tool called"})
-                            }
+                        let response = match &tools_clone {
+                            Some(t) => t.run_tool(&tc.name, tc.args).await,
+                            None => json!({"Error": "Unsupported tool called"})
                         };
 
                         let tc_result = LooperToHandlerToolCallResult {
@@ -152,10 +138,6 @@ fn render_system_message(template: &str, instructions: Option<&str>) -> Result<S
     Ok(tera.render("system_prompt", &ctx)?)
 }
 
-fn get_openai_system_message(instructions: Option<&str>) -> Result<String> {
-    render_system_message(include_str!("../prompts/system_prompt_openai.txt"), instructions)
-}
-
-fn get_anthropic_system_message(instructions: Option<&str>) -> Result<String> {
-    render_system_message(include_str!("../prompts/system_prompt_anthropic.txt"), instructions)
+fn get_system_message(instructions: Option<&str>) -> Result<String> {
+    render_system_message(include_str!("../prompts/system_prompt.txt"), instructions)
 }
