@@ -7,9 +7,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, Mutex, Notify};
 
 use looper::{
-    looper_stream::LooperStream,
-    tools::{LooperTool, LooperTools},
-    types::{Handlers, LooperToInterfaceMessage, LooperToolDefinition},
+    looper::Looper, looper_stream::LooperStream, tools::{LooperTool, LooperTools}, types::{Handlers, LooperToInterfaceMessage, LooperToolDefinition}
 };
 
 
@@ -21,9 +19,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let theme = Theme::default();
 
     let tools: Arc<Mutex<dyn LooperTools>> = Arc::new(Mutex::new(ToolSet::new()));
+    let agent_tools: Arc<Mutex<dyn LooperTools>> = Arc::new(Mutex::new(ToolSet::new()));
+
     let (tx, mut rx) = mpsc::channel(10000);
 
+    // NOTE: For now, agent_looper doesn't need to stream tokens since the user
+    // doesn't directly see it's token stream anyway. Might as well just leave it
+    // as non-streaming, unless there is obviously value to changing this.
+    let agent_looper = Looper::builder(Handlers::OpenAIResponses("gpt-5-mini"))
+        .tools(agent_tools)
+        .instructions("
+            You are an agent researching specific tasks for another agent that is invoking you.
+            Report back with concise and clear findings since the agent invoking you will rely on this information.
+        ")
+        .build().await?;
+
     let mut looper = LooperStream::builder(Handlers::OpenAIResponses("gpt-5.4"))
+        .sub_agent(agent_looper)
         .tools(tools)
         .interface_sender(tx)
         .instructions("You're being used as a CLI example for an agent loop. Be succinct yet friendly and helpful.")
@@ -99,7 +111,7 @@ impl LooperTool for ReadFileTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let path = args["path"].as_str().unwrap_or("");
         match tokio::fs::read_to_string(path).await {
             Ok(content) => json!({ "path": path, "content": content }),
@@ -128,7 +140,7 @@ impl LooperTool for WriteFileTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let path = args["path"].as_str().unwrap_or("");
         let content = args["content"].as_str().unwrap_or("");
         if let Some(parent) = std::path::Path::new(path).parent() {
@@ -160,7 +172,7 @@ impl LooperTool for ListDirectoryTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let path = args["path"].as_str().unwrap_or(".");
         match tokio::fs::read_dir(path).await {
             Ok(mut entries) => {
@@ -202,7 +214,7 @@ impl LooperTool for GrepTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let pattern = args["pattern"].as_str().unwrap_or("");
         let path = args["path"].as_str().unwrap_or(".");
         let output = tokio::process::Command::new("grep")
@@ -246,7 +258,7 @@ impl LooperTool for FindFilesTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let pattern = args["pattern"].as_str().unwrap_or("*");
         let path = args["path"].as_str().unwrap_or(".");
         let output = tokio::process::Command::new("find")
@@ -303,7 +315,7 @@ impl LooperTools for ToolSet {
     async fn run_tool(&self, name: &str, args: Value) -> Value {
         match self.tools.get(name) {
             Some(tool) => {
-                let tool = tool.lock().await;
+                let mut tool = tool.lock().await;
                 tool.execute(&args).await
             },
             None => json!({"error": format!("Unknown function: {}", name)}),

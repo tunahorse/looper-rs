@@ -11,7 +11,7 @@ use crate::types::LooperToolDefinition;
 
 #[async_trait]
 pub trait LooperTool: Send + Sync {
-    async fn execute(&self, args: &Value) -> Value;
+    async fn execute(&mut self, args: &Value) -> Value;
     fn tool(&self) -> LooperToolDefinition;
     fn get_tool_name(&self) -> String;
 }

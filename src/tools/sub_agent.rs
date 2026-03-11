@@ -1,19 +1,16 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde_json::json;
 use tera::Value;
-use tokio::sync::Mutex;
 
-use crate::{looper::Looper, tools::{LooperTool, LooperTools}, types::{Handlers, LooperToolDefinition}};
+use crate::{looper::Looper, tools::LooperTool, types::LooperToolDefinition};
 
 pub struct SubAgentTool {
-    tools: Arc<Mutex<dyn LooperTools>>,
+    looper: Looper,
 }
 
 impl SubAgentTool {
-    pub fn new(tools: Arc<Mutex<dyn LooperTools>>) -> Self {
-        SubAgentTool { tools }
+    pub fn new(looper: Looper) -> Self {
+        SubAgentTool { looper }
     }
 }
 
@@ -39,33 +36,17 @@ impl LooperTool for SubAgentTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let Some(task_description) = args["task_description"]
             .as_str()
         else {
             return json!({ "error": "Missing 'task_description' argument" });
         };
 
-        println!("Creating new looper instance in sub-agent");
-
-        let mut looper = match Looper::builder(Handlers::OpenAIResponses("gpt-5.4"))
-            .instructions("You're being used as a CLI example for an agent loop. Be succinct yet friendly and helpful.")
-            .tools(self.tools.clone())
-            .enable_sub_agents(false) // explicitly disabling sub_agents to avoid infinite looper
-            .build().await 
-        {
-            Ok(l) => l,
-            Err(e) => return json!({ "error": format!("An error occured when building Looper | Error: {}", e) })
-        };
-
-        println!("Sending the task description to looper");
-
-        let result = match looper.send(&task_description).await {
+        let result = match self.looper.send(&task_description).await {
             Ok(r) => r,
             Err(e) => return json!({ "error": format!("An error occured when sending message | Error: {}", e) })
         };
-
-        println!("Got final text responding back out");
 
         match &result.final_text {
             Some(ft) => json!({ "agent_findings": ft }),

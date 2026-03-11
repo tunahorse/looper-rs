@@ -16,12 +16,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::dotenv().ok();
 
     let tools: Arc<Mutex<dyn LooperTools>> = Arc::new(Mutex::new(ToolSet::new()));
+    let agent_tools: Arc<Mutex<dyn LooperTools>> = Arc::new(Mutex::new(ToolSet::new()));
+
+    let agent_looper = Looper::builder(Handlers::OpenAIResponses("gpt-5.4"))
+        .tools(agent_tools)
+        .instructions("You're being used as a CLI example for an agent loop. Be succinct yet friendly and helpful.")
+        .build().await?;
 
     let mut looper = Looper::builder(Handlers::OpenAIResponses("gpt-5.4"))
         .tools(tools)
-        .enable_sub_agents(true)
+        .sub_agent(agent_looper)
         .instructions("You're being used as a CLI example for an agent loop. Be succinct yet friendly and helpful.")
         .build().await?;
+
 
     loop {
         print!("> ");
@@ -79,7 +86,7 @@ impl LooperTool for ReadFileTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let path = args["path"].as_str().unwrap_or("");
         match tokio::fs::read_to_string(path).await {
             Ok(content) => json!({ "path": path, "content": content }),
@@ -107,7 +114,7 @@ impl LooperTool for ListDirectoryTool {
             }))
     }
 
-    async fn execute(&self, args: &Value) -> Value {
+    async fn execute(&mut self, args: &Value) -> Value {
         let path = args["path"].as_str().unwrap_or(".");
         match tokio::fs::read_dir(path).await {
             Ok(mut entries) => {
@@ -165,7 +172,7 @@ impl LooperTools for ToolSet {
     async fn run_tool(&self, name: &str, args: Value) -> Value {
         match self.tools.get(name) {
             Some(tool) => {
-                let tool = tool.lock().await;
+                let mut tool = tool.lock().await;
                 tool.execute(&args).await
             },
             None => json!({"error": format!("Unknown function: {}", name)}),

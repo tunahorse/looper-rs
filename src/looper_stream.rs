@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    services::{anthropic::AnthropicHandler, openai_completions::OpenAIChatHandler, openai_responses::OpenAIResponsesHandler, StreamingChatHandler},
-    tools::{LooperTools, SubAgentTool},
-    types::{HandlerToLooperMessage, Handlers, LooperToHandlerToolCallResult, LooperToInterfaceMessage, MessageHistory},
+    looper::Looper, services::{StreamingChatHandler, anthropic::AnthropicHandler, openai_completions::OpenAIChatHandler, openai_responses::OpenAIResponsesHandler}, tools::{LooperTools, SubAgentTool}, types::{HandlerToLooperMessage, Handlers, LooperToHandlerToolCallResult, LooperToInterfaceMessage, MessageHistory}
 };
 use anyhow::Result;
 use serde_json::json;
@@ -21,6 +19,7 @@ pub struct LooperStreamBuilder<'a> {
     tools: Option<Arc<Mutex<dyn LooperTools>>>,
     instructions: Option<String>,
     interface_sender: Option<Sender<LooperToInterfaceMessage>>,
+    sub_agent: Option<Looper>,
 }
 
 impl<'a> LooperStreamBuilder<'a> {
@@ -31,6 +30,11 @@ impl<'a> LooperStreamBuilder<'a> {
 
     pub fn tools(mut self, tools: Arc<Mutex<dyn LooperTools>>) -> Self {
         self.tools = Some(tools);
+        self
+    }
+
+    pub fn sub_agent(mut self, looper: Looper) -> Self {
+        self.sub_agent = Some(looper);
         self
     }
 
@@ -56,9 +60,12 @@ impl<'a> LooperStreamBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let tc = t.clone();
                     let mut t = t.lock().await;
-                    let _ = t.add_tool(Arc::new(Mutex::new(SubAgentTool::new(tc)))).await;
+
+                    if let Some(sa) = self.sub_agent {
+                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let _ = t.add_tool(agent_tools).await;
+                    }
                     handler.set_tools(t.get_tools().await);
                 }
 
@@ -72,9 +79,12 @@ impl<'a> LooperStreamBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let tc = t.clone();
                     let mut t = t.lock().await;
-                    let _ = t.add_tool(Arc::new(Mutex::new(SubAgentTool::new(tc)))).await;
+
+                    if let Some(sa) = self.sub_agent {
+                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let _ = t.add_tool(agent_tools).await;
+                    }
                     handler.set_tools(t.get_tools().await);
                 }
 
@@ -88,9 +98,12 @@ impl<'a> LooperStreamBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let tc = t.clone();
                     let mut t = t.lock().await;
-                    let _ = t.add_tool(Arc::new(Mutex::new(SubAgentTool::new(tc)))).await;
+
+                    if let Some(sa) = self.sub_agent {
+                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let _ = t.add_tool(agent_tools).await;
+                    }
                     handler.set_tools(t.get_tools().await);
                 }
 
@@ -173,6 +186,7 @@ impl LooperStream {
             handler_type,
             message_history: None,
             tools: None,
+            sub_agent: None,
             instructions: None,
             interface_sender: None,
         }

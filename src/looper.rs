@@ -23,7 +23,7 @@ pub struct LooperBuilder<'a> {
     message_history: Option<MessageHistory>,
     tools: Option<Arc<Mutex<dyn LooperTools>>>,
     instructions: Option<String>,
-    enable_sub_agents: bool
+    sub_agent: Option<Looper>,
 }
 
 impl<'a> LooperBuilder<'a> {
@@ -37,13 +37,13 @@ impl<'a> LooperBuilder<'a> {
         self
     }
 
-    pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
-        self.instructions = Some(instructions.into());
+    pub fn sub_agent(mut self, looper: Looper) -> Self {
+        self.sub_agent = Some(looper);
         self
     }
 
-    pub fn enable_sub_agents(mut self, enable: bool) -> Self {
-        self.enable_sub_agents = enable;
+    pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
         self
     }
 
@@ -56,10 +56,11 @@ impl<'a> LooperBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let tc = t.clone();
                     let mut t = t.lock().await;
-                    if self.enable_sub_agents {
-                        let _ = t.add_tool(Arc::new(Mutex::new(SubAgentTool::new(tc)))).await;
+
+                    if let Some(sa) = self.sub_agent {
+                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let _ = t.add_tool(agent_tools).await;
                     }
                     handler.set_tools(t.get_tools().await);
                 }
@@ -73,10 +74,11 @@ impl<'a> LooperBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let tc = t.clone();
                     let mut t = t.lock().await;
-                    if self.enable_sub_agents {
-                        let _ = t.add_tool(Arc::new(Mutex::new(SubAgentTool::new(tc)))).await;
+
+                    if let Some(sa) = self.sub_agent {
+                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let _ = t.add_tool(agent_tools).await;
                     }
                     handler.set_tools(t.get_tools().await);
                 }
@@ -90,10 +92,11 @@ impl<'a> LooperBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let tc = t.clone();
                     let mut t = t.lock().await;
-                    if self.enable_sub_agents {
-                        let _ = t.add_tool(Arc::new(Mutex::new(SubAgentTool::new(tc)))).await;
+
+                    if let Some(sa) = self.sub_agent {
+                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let _ = t.add_tool(agent_tools).await;
                     }
                     handler.set_tools(t.get_tools().await);
                 }
@@ -116,8 +119,8 @@ impl Looper {
             handler_type,
             message_history: None,
             tools: None,
+            sub_agent: None,
             instructions: None,
-            enable_sub_agents: false, 
         }
     }
 
