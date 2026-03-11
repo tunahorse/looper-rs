@@ -12,7 +12,7 @@ use async_recursion::async_recursion;
 use async_trait::async_trait;
 
 use anyhow::Result;
-use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 use crate::{
     services::ChatHandler,
@@ -47,7 +47,7 @@ impl AnthropicNonStreamingHandler {
     #[async_recursion]
     async fn inner_send_message(
         &mut self,
-        tools_runner: Option<&'async_recursion Arc<Mutex<dyn LooperTools>>>,
+        tools_runner: Arc<dyn LooperTools>,
         steps: &mut Vec<TurnStep>,
     ) -> Result<()> {
         let request = CreateMessagesRequestBuilder::default()
@@ -102,35 +102,47 @@ impl AnthropicNonStreamingHandler {
         let mut tool_call_records = Vec::new();
 
         if !tool_uses.is_empty() {
-            for tool_use in &tool_uses {
-                let result = match tools_runner {
-                    Some(runner) => {
-                        let runner = runner.lock().await;
-                        runner.run_tool(&tool_use.name, tool_use.input.clone()).await
-                    },
-                    None => serde_json::json!({"error": "No tools runner available"}),
-                };
+            let tr = tools_runner.clone();
+            let mut tool_join_set = JoinSet::new();
 
-                tool_call_records.push(ToolCallRecord {
-                    id: tool_use.id.clone(),
-                    name: tool_use.name.clone(),
-                    args: tool_use.input.clone(),
-                    result: result.clone(),
-                });
+            for tool_use in tool_uses {
+                let tr = tr.clone();
+                tool_join_set.spawn(async move {
+                    let result = tr.run_tool(tool_use.name.clone(), tool_use.input.clone()).await;
 
-                // Push tool result message to history
-                self.messages.push(Message {
-                    role: MessageRole::User,
-                    content: MessageContentList(vec![
-                        MessageContent::ToolResult(
-                            ToolResultBuilder::default()
-                                .tool_use_id(&tool_use.id)
-                                .content(result.to_string())
-                                .build()?
-                        )
-                    ]),
+                    (result, tool_use)
                 });
             }
+
+            while let Some(result) = tool_join_set.join_next().await {
+                match result {
+                    Ok((result, tool_use)) => {
+                        tool_call_records.push(ToolCallRecord {
+                            id: tool_use.id.clone(),
+                            name: tool_use.name.clone(),
+                            args: tool_use.input.clone(),
+                            result: result.clone(),
+                        });
+
+                        // Push tool result message to history
+                        self.messages.push(Message {
+                            role: MessageRole::User,
+                            content: MessageContentList(vec![
+                                MessageContent::ToolResult(
+                                    ToolResultBuilder::default()
+                                        .tool_use_id(&tool_use.id)
+                                        .content(result.to_string())
+                                        .build()?
+                                )
+                            ]),
+                        });
+                    },
+                    Err(e) => {
+                        eprintln!("Join Error occured when collecting tool call results | Error: {}", e);
+                    }
+                }
+            }
+
 
             steps.push(TurnStep {
                 thinking,
@@ -139,7 +151,7 @@ impl AnthropicNonStreamingHandler {
             });
 
             // Recurse to handle follow-up
-            return self.inner_send_message(tools_runner, steps).await;
+            return self.inner_send_message(tr, steps).await;
         }
 
         steps.push(TurnStep {
@@ -158,7 +170,7 @@ impl ChatHandler for AnthropicNonStreamingHandler {
         &mut self,
         message_history: Option<MessageHistory>,
         message: &str,
-        tools_runner: Option<&Arc<Mutex<dyn LooperTools>>>,
+        tools_runner: Arc<dyn LooperTools>,
     ) -> Result<TurnResult> {
         if let Some(MessageHistory::Messages(m)) = message_history {
             let messages: Vec<Message> = serde_json::from_value(m)?;

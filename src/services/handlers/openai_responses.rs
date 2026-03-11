@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_openai::{
     Client,
     config::OpenAIConfig,
@@ -13,10 +15,12 @@ use async_trait::async_trait;
 
 use anyhow::Result;
 use futures::StreamExt;
-use tokio::sync::{mpsc::Sender, oneshot};
+use serde_json::Value;
+use tokio::task::JoinSet;
 
 use crate::{
     services::StreamingChatHandler,
+    tools::LooperTools,
     types::{
         HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition,
         MessageHistory,
@@ -27,14 +31,14 @@ pub struct OpenAIResponsesHandler {
     client: Client<OpenAIConfig>,
     model: String,
     previous_response_id: Option<String>,
-    sender: Sender<HandlerToLooperMessage>,
+    sender: tokio::sync::mpsc::Sender<HandlerToLooperMessage>,
     tools: Vec<Tool>,
     instructions: String,
 }
 
 impl OpenAIResponsesHandler {
     pub fn new(
-        sender: Sender<HandlerToLooperMessage>,
+        sender: tokio::sync::mpsc::Sender<HandlerToLooperMessage>,
         model: &str,
         system_message: &str,
     ) -> Result<Self> {
@@ -51,7 +55,11 @@ impl OpenAIResponsesHandler {
     }
 
     #[async_recursion]
-    async fn inner_send_message(&mut self, input: Option<InputParam>) -> Result<String> {
+    async fn inner_send_message(
+        &mut self,
+        input: Option<InputParam>,
+        tools_runner: Arc<dyn LooperTools>,
+    ) -> Result<String> {
         let mut builder = CreateResponseArgs::default();
         builder
             .model(&self.model)
@@ -75,7 +83,7 @@ impl OpenAIResponsesHandler {
 
         let mut assistant_res_buf = Vec::new();
         let mut function_calls: Vec<FunctionToolCall> = Vec::new();
-        let mut tool_call_receivers = Vec::new();
+        let mut tool_join_set = JoinSet::new();
         let mut response_id: Option<String> = None;
 
         while let Some(event) = stream.next().await {
@@ -105,21 +113,25 @@ impl OpenAIResponsesHandler {
                 }
                 Ok(ResponseStreamEvent::ResponseOutputItemDone(item_done)) => {
                     if let OutputItem::FunctionCall(fc) = item_done.item {
-                        let (tx, rx) = oneshot::channel();
-                        let args = serde_json::from_str(&fc.arguments)?;
-
                         let tcr = HandlerToLooperToolCallRequest {
                             id: fc.call_id.clone(),
                             name: fc.name.clone(),
-                            args,
-                            tool_result_channel: tx,
+                            args: serde_json::from_str(&fc.arguments).unwrap_or_default(),
                         };
 
                         self.sender
-                            .send(HandlerToLooperMessage::ToolCallRequest(tcr))
+                            .send(HandlerToLooperMessage::ToolCallRequest(tcr.clone()))
                             .await?;
 
-                        tool_call_receivers.push(rx);
+                        let tr = tools_runner.clone();
+                        let fc_clone = fc.clone();
+                        tool_join_set.spawn(async move {
+                            let args: Value = serde_json::from_str(&fc_clone.arguments)
+                                .unwrap_or_default();
+                            let result = tr.run_tool(fc_clone.name.clone(), args).await;
+                            (fc_clone.call_id.clone(), result)
+                        });
+
                         function_calls.push(fc);
                     }
                 }
@@ -138,30 +150,28 @@ impl OpenAIResponsesHandler {
             self.previous_response_id = Some(id);
         }
 
-        if !function_calls.is_empty() {
-            let results = futures::future::join_all(
-                tool_call_receivers
-                    .into_iter()
-                    .map(|rx| async move {
-                        let res = rx.await.unwrap();
-                        (res.id, res.value)
-                    }),
-            )
-            .await;
+        if !tool_join_set.is_empty() {
+            let mut input_items: Vec<InputItem> = Vec::new();
 
-            let input_items: Vec<InputItem> = results
-                .into_iter()
-                .map(|(call_id, value)| {
-                    InputItem::Item(Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                        call_id,
-                        output: FunctionCallOutput::Text(value.to_string()),
-                        id: None,
-                        status: None,
-                    }))
-                })
-                .collect();
+            while let Some(result) = tool_join_set.join_next().await {
+                match result {
+                    Ok((call_id, value)) => {
+                        input_items.push(InputItem::Item(Item::FunctionCallOutput(
+                            FunctionCallOutputItemParam {
+                                call_id,
+                                output: FunctionCallOutput::Text(value.to_string()),
+                                id: None,
+                                status: None,
+                            },
+                        )));
+                    },
+                    Err(e) => {
+                        eprintln!("Join Error occured when collecting tool call results | Error: {}", e);
+                    }
+                }
+            }
 
-            return self.inner_send_message(Some(InputParam::Items(input_items))).await;
+            return self.inner_send_message(Some(InputParam::Items(input_items)), tools_runner).await;
         }
 
         Ok(assistant_res_buf.join(""))
@@ -174,13 +184,14 @@ impl StreamingChatHandler for OpenAIResponsesHandler {
         &mut self,
         message_history: Option<MessageHistory>,
         message: &str,
+        tools_runner: Arc<dyn LooperTools>,
     ) -> Result<MessageHistory> {
         if let Some(MessageHistory::ResponseId(id)) = message_history {
             self.previous_response_id = Some(id);
         }
 
         let input = InputParam::Text(message.to_string());
-        self.inner_send_message(Some(input)).await?;
+        self.inner_send_message(Some(input), tools_runner).await?;
 
         self.sender
             .send(HandlerToLooperMessage::TurnComplete)

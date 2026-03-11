@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use async_anthropic::{
     Client,
@@ -15,13 +15,10 @@ use async_trait::async_trait;
 use anyhow::Result;
 use futures::StreamExt;
 
-use tokio::sync::{
-    mpsc::Sender,
-    oneshot,
-};
+use tokio::{sync::mpsc::Sender, task::JoinSet};
 
 
-use crate::{services::StreamingChatHandler, types::{
+use crate::{services::StreamingChatHandler, tools::LooperTools, types::{
     HandlerToLooperMessage, HandlerToLooperToolCallRequest, LooperToolDefinition, MessageHistory,
 }};
 
@@ -56,7 +53,10 @@ impl AnthropicHandler {
     }
 
     #[async_recursion]
-    async fn inner_send_message(&mut self) -> Result<String> {
+    async fn inner_send_message(
+        &mut self,
+        tools_runner: Arc<dyn LooperTools>,
+    ) -> Result<String> {
         let request = CreateMessagesRequestBuilder::default()
             .model(&self.model)
             .system(self.system_message.clone())
@@ -68,7 +68,7 @@ impl AnthropicHandler {
 
 
         let mut stream = self.client.messages().create_stream(request).await;
-        let mut tool_call_receivers = Vec::new();
+        let mut tool_join_set = JoinSet::new();
         let mut content_blocks = HashMap::new();
         let mut tool_input_bufs: HashMap<usize, String> = HashMap::new();
         let mut signatures: HashMap<usize, String> = HashMap::new();
@@ -167,20 +167,24 @@ impl AnthropicHandler {
 
                 // Collect tool call requests
                 if let MessageContent::ToolUse(ref t) = block {
-                    let (tx, rx) = oneshot::channel();
-
                     let tcr = HandlerToLooperToolCallRequest {
                         id: t.id.clone(),
                         name: t.name.clone(),
                         args: t.input.clone(),
-                        tool_result_channel: tx,
                     };
 
                     self.sender
-                        .send(HandlerToLooperMessage::ToolCallRequest(tcr))
+                        .send(HandlerToLooperMessage::ToolCallRequest(tcr.clone()))
                         .await?;
 
-                    tool_call_receivers.push(rx);
+                    let tr = tools_runner.clone();
+                    let tool_name = t.name.clone();
+                    let tool_input = t.input.clone();
+
+                    tool_join_set.spawn(async move {
+                        let result = tr.run_tool(tool_name, tool_input).await;
+                        (result, tcr)
+                    });
                 }
 
                 assistant_content.push(block);
@@ -194,30 +198,30 @@ impl AnthropicHandler {
             });
         }
 
-        // Wait for all tool call executions to complete
-        let results =
-            futures::future::join_all(tool_call_receivers.into_iter().map(|rx| async move {
-                let res = rx.await.unwrap();
-                (res.id, res.value)
-            }))
-            .await;
-
-        if !results.is_empty() {
-            for (tool_call_id, response) in results {
-                self.messages.push(Message {
-                    role: MessageRole::User,
-                    content: MessageContentList(vec![
-                        MessageContent::ToolResult(
-                            ToolResultBuilder::default()
-                                .tool_use_id(&tool_call_id)
-                                .content(response.to_string())
-                                .build()?
-                        )
-                    ]),
-                });
+        if !tool_join_set.is_empty() {
+            while let Some(result) = tool_join_set.join_next().await {
+                match result {
+                    Ok((result, tool_use)) => {
+                        // Push tool result message to history
+                        self.messages.push(Message {
+                            role: MessageRole::User,
+                            content: MessageContentList(vec![
+                                MessageContent::ToolResult(
+                                    ToolResultBuilder::default()
+                                        .tool_use_id(&tool_use.id)
+                                        .content(result.to_string())
+                                        .build()?
+                                )
+                            ]),
+                        });
+                    },
+                    Err(e) => {
+                        eprintln!("Join Error occured when collecting tool call results | Error: {}", e);
+                    }
+                }
             }
 
-            return self.inner_send_message().await;
+            return self.inner_send_message(tools_runner).await;
         }
 
         Ok(String::new())
@@ -229,7 +233,8 @@ impl StreamingChatHandler for AnthropicHandler {
     async fn send_message(
         &mut self,
         message_history: Option<MessageHistory>,
-        message: &str
+        message: &str,
+        tools_runner: Arc<dyn LooperTools>,
     ) -> Result<MessageHistory> {
         if let Some(MessageHistory::Messages(m)) = message_history {
             let messages: Vec<Message> = serde_json::from_value(m)?;
@@ -241,7 +246,7 @@ impl StreamingChatHandler for AnthropicHandler {
             content: MessageContentList(vec![MessageContent::from(message)]),
         });
 
-        self.inner_send_message().await?;
+        self.inner_send_message(tools_runner).await?;
 
         self.sender
             .send(HandlerToLooperMessage::TurnComplete)

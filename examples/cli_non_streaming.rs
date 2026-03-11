@@ -15,8 +15,8 @@ use tokio::sync::Mutex;
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::dotenv().ok();
 
-    let tools: Arc<Mutex<dyn LooperTools>> = Arc::new(Mutex::new(ToolSet::new()));
-    let agent_tools: Arc<Mutex<dyn LooperTools>> = Arc::new(Mutex::new(ToolSet::new()));
+    let tools: Box<dyn LooperTools> = Box::new(ToolSet::new());
+    let agent_tools: Box<dyn LooperTools> = Box::new(ToolSet::new());
 
     let agent_looper = Looper::builder(Handlers::OpenAIResponses("gpt-5.4"))
         .tools(agent_tools)
@@ -139,14 +139,14 @@ impl LooperTool for ListDirectoryTool {
 // ── Tool set ────────────────────────────────────────────────────────
 
 struct ToolSet {
-    tools: HashMap<String, Arc<Mutex<dyn LooperTool>>>,
+    tools: HashMap<String, Mutex<Arc<dyn LooperTool>>>,
 }
 
 impl ToolSet {
     fn new() -> Self {
-        let mut tools: HashMap<String, Arc<Mutex<dyn LooperTool>>> = HashMap::new();
-        tools.insert("read_file".to_string(), Arc::new(Mutex::new(ReadFileTool)));
-        tools.insert("list_directory".to_string(), Arc::new(Mutex::new(ListDirectoryTool)));
+        let mut tools: HashMap<String, Mutex<Arc<dyn LooperTool>>> = HashMap::new();
+        tools.insert("read_file".to_string(), Mutex::new(Arc::new(ReadFileTool)));
+        tools.insert("list_directory".to_string(), Mutex::new(Arc::new(ListDirectoryTool)));
         ToolSet { tools }
     }
 }
@@ -164,15 +164,16 @@ impl LooperTools for ToolSet {
         tools
     }
 
-    async fn add_tool(&mut self, tool: Arc<Mutex<dyn LooperTool>>) {
-        let tool_name = tool.lock().await.get_tool_name();
-        self.tools.insert(tool_name, tool);
+    async fn add_tool(&mut self, tool: Arc<dyn LooperTool>) {
+        let tool_name = tool.get_tool_name();
+        self.tools.insert(tool_name, Mutex::new(tool));
     }
 
-    async fn run_tool(&self, name: &str, args: Value) -> Value {
-        match self.tools.get(name) {
-            Some(tool) => {
-                let mut tool = tool.lock().await;
+    async fn run_tool(&self, name: String, args: Value) -> Value {
+        match self.tools.get(&name) {
+            Some(tool_mutex) => {
+                let mut arc = tool_mutex.lock().await;
+                let tool = Arc::get_mut(&mut arc).expect("tool has multiple references");
                 tool.execute(&args).await
             },
             None => json!({"error": format!("Unknown function: {}", name)}),

@@ -13,7 +13,7 @@ use async_recursion::async_recursion;
 use async_trait::async_trait;
 
 use anyhow::Result;
-use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 use crate::{
     services::ChatHandler,
@@ -49,7 +49,7 @@ impl OpenAIResponsesNonStreamingHandler {
     async fn inner_send_message(
         &mut self,
         input: Option<InputParam>,
-        tools_runner: Option<&'async_recursion Arc<Mutex<dyn LooperTools>>>,
+        tools_runner: Arc<dyn LooperTools>,
         steps: &mut Vec<TurnStep>,
     ) -> Result<()> {
         let mut builder = CreateResponseArgs::default();
@@ -109,35 +109,43 @@ impl OpenAIResponsesNonStreamingHandler {
 
         if !function_calls.is_empty() {
             let mut input_items: Vec<InputItem> = Vec::new();
+            let tr = tools_runner.clone();
+            let mut tool_join_set = JoinSet::new();
 
-            for fc in &function_calls {
-                let args = serde_json::from_str(&fc.arguments)?;
+            for fc in function_calls {
+                let tr = tr.clone();
+                tool_join_set.spawn(async move {
+                    let args: serde_json::Value = serde_json::from_str(&fc.arguments)
+                        .unwrap_or_default();
+                    let result = tr.run_tool(fc.name.clone(), args.clone()).await;
 
-                let result = match tools_runner {
-                    Some(runner) => {
-                        let runner = runner.lock().await;
-                        runner.run_tool(&fc.name, args).await 
-                    },
-                    None => serde_json::json!({"error": "No tools runner available"}),
-                };
-
-                let args_value = serde_json::from_str(&fc.arguments)?;
-
-                tool_call_records.push(ToolCallRecord {
-                    id: fc.call_id.clone(),
-                    name: fc.name.clone(),
-                    args: args_value,
-                    result: result.clone(),
+                    (result, fc, args)
                 });
+            }
 
-                input_items.push(InputItem::Item(Item::FunctionCallOutput(
-                    FunctionCallOutputItemParam {
-                        call_id: fc.call_id.clone(),
-                        output: FunctionCallOutput::Text(result.to_string()),
-                        id: None,
-                        status: None,
+            while let Some(result) = tool_join_set.join_next().await {
+                match result {
+                    Ok((result, fc, args)) => {
+                        tool_call_records.push(ToolCallRecord {
+                            id: fc.call_id.clone(),
+                            name: fc.name.clone(),
+                            args,
+                            result: result.clone(),
+                        });
+
+                        input_items.push(InputItem::Item(Item::FunctionCallOutput(
+                            FunctionCallOutputItemParam {
+                                call_id: fc.call_id.clone(),
+                                output: FunctionCallOutput::Text(result.to_string()),
+                                id: None,
+                                status: None,
+                            },
+                        )));
                     },
-                )));
+                    Err(e) => {
+                        eprintln!("Join Error occured when collecting tool call results | Error: {}", e);
+                    }
+                }
             }
 
             steps.push(TurnStep {
@@ -168,7 +176,7 @@ impl ChatHandler for OpenAIResponsesNonStreamingHandler {
         &mut self,
         message_history: Option<MessageHistory>,
         message: &str,
-        tools_runner: Option<&Arc<Mutex<dyn LooperTools>>>,
+        tools_runner: Arc<dyn LooperTools>,
     ) -> Result<TurnResult> {
         if let Some(MessageHistory::ResponseId(id)) = message_history {
             self.previous_response_id = Some(id);

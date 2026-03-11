@@ -1,22 +1,35 @@
 use std::sync::Arc;
 
 use crate::{
-    looper::Looper, services::{StreamingChatHandler, anthropic::AnthropicHandler, openai_completions::OpenAIChatHandler, openai_responses::OpenAIResponsesHandler}, tools::{LooperTools, SubAgentTool}, types::{HandlerToLooperMessage, Handlers, LooperToHandlerToolCallResult, LooperToInterfaceMessage, MessageHistory}
+    looper::Looper, 
+    services::{
+        StreamingChatHandler, anthropic::AnthropicHandler, 
+        openai_completions::OpenAIChatHandler, openai_responses::OpenAIResponsesHandler
+    }, 
+    tools::{
+        EmptyToolSet, LooperTools, SubAgentTool
+    }, 
+    types::{
+        HandlerToLooperMessage, 
+        Handlers, 
+        LooperToInterfaceMessage, 
+        MessageHistory
+    }
 };
 use anyhow::Result;
-use serde_json::json;
 use tera::{Tera, Context};
-use tokio::sync::{mpsc::{self, Sender}, Mutex};
+use tokio::sync::mpsc::{self, Sender};
 
 pub struct LooperStream {
     handler: Box<dyn StreamingChatHandler>,
     message_history: Option<MessageHistory>,
+    tools: Arc<dyn LooperTools>,
 }
 
 pub struct LooperStreamBuilder<'a> {
     handler_type: Handlers<'a>,
     message_history: Option<MessageHistory>,
-    tools: Option<Arc<Mutex<dyn LooperTools>>>,
+    tools: Option<Box<dyn LooperTools>>,
     instructions: Option<String>,
     interface_sender: Option<Sender<LooperToInterfaceMessage>>,
     sub_agent: Option<Looper>,
@@ -28,7 +41,7 @@ impl<'a> LooperStreamBuilder<'a> {
         self
     }
 
-    pub fn tools(mut self, tools: Arc<Mutex<dyn LooperTools>>) -> Self {
+    pub fn tools(mut self, tools: Box<dyn LooperTools>) -> Self {
         self.tools = Some(tools);
         self
     }
@@ -66,10 +79,8 @@ impl<'a> LooperStreamBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let mut t = t.lock().await;
-
                     if let Some(sa) = self.sub_agent {
-                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let agent_tools = Arc::new(SubAgentTool::new(sa));
                         let _ = t.add_tool(agent_tools).await;
                     }
                     handler.set_tools(t.get_tools().await);
@@ -85,10 +96,8 @@ impl<'a> LooperStreamBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let mut t = t.lock().await;
-
                     if let Some(sa) = self.sub_agent {
-                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let agent_tools = Arc::new(SubAgentTool::new(sa));
                         let _ = t.add_tool(agent_tools).await;
                     }
                     handler.set_tools(t.get_tools().await);
@@ -104,10 +113,8 @@ impl<'a> LooperStreamBuilder<'a> {
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
-                    let mut t = t.lock().await;
-
                     if let Some(sa) = self.sub_agent {
-                        let agent_tools = Arc::new(Mutex::new(SubAgentTool::new(sa)));
+                        let agent_tools = Arc::new(SubAgentTool::new(sa));
                         let _ = t.add_tool(agent_tools).await;
                     }
                     handler.set_tools(t.get_tools().await);
@@ -152,21 +159,6 @@ impl<'a> LooperStreamBuilder<'a> {
                                 .send(LooperToInterfaceMessage::ToolCall(tc.name.clone()))
                                 .await
                                 .unwrap();
-
-                            let response = match &self.tools {
-                                Some(t) => {
-                                    let t = t.lock().await;
-                                    t.run_tool(&tc.name, tc.args).await
-                                },
-                                None => json!({"Error": "Unsupported tool called"})
-                            };
-
-                            let tc_result = LooperToHandlerToolCallResult {
-                                id: tc.id,
-                                value: response,
-                            };
-
-                            tc.tool_result_channel.send(tc_result).unwrap();
                         }
                         HandlerToLooperMessage::TurnComplete => {
                             l_i_s
@@ -179,10 +171,10 @@ impl<'a> LooperStreamBuilder<'a> {
             });
         }
 
-        Ok(LooperStream {
-            handler,
-            message_history: self.message_history,
-        })
+        match self.tools {
+            Some(t) => Ok(LooperStream { handler, message_history: self.message_history, tools: Arc::from(t) }),
+            None => Ok(LooperStream { handler, message_history: self.message_history, tools: Arc::new(EmptyToolSet) })
+        }
     }
 }
 
@@ -199,7 +191,12 @@ impl LooperStream {
     }
 
     pub async fn send(&mut self, message: &str) -> Result<MessageHistory> {
-        let history = self.handler.send_message(self.message_history.clone(), message).await?;
+        let history = self.handler.send_message(
+            self.message_history.clone(), 
+            message,
+            self.tools.clone()
+        ).await?;
+
         self.message_history = Some(history.clone());
 
         Ok(history)

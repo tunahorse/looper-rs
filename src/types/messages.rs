@@ -1,5 +1,4 @@
 use serde_json::Value;
-use tokio::sync::oneshot::Sender;
 
 type Name = String;
 type Message = String;
@@ -15,12 +14,11 @@ pub enum HandlerToLooperMessage {
     TurnComplete
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HandlerToLooperToolCallRequest {
     pub id: String,
     pub name: String,
     pub args: Value,
-    pub tool_result_channel: Sender<LooperToHandlerToolCallResult>
 }
 
 #[derive(Debug)]

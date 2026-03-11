@@ -1,11 +1,13 @@
 pub mod sub_agent;
-use std::sync::Arc;
-
 pub use sub_agent::*;
+
+pub mod empty;
+pub use empty::*;
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::Mutex;
 
 use crate::types::LooperToolDefinition;
 
@@ -19,6 +21,6 @@ pub trait LooperTool: Send + Sync {
 #[async_trait]
 pub trait LooperTools: Send + Sync {
     async fn get_tools(&self) -> Vec<LooperToolDefinition>;
-    async fn add_tool(&mut self, tool: Arc<Mutex<dyn LooperTool>>);
-    async fn run_tool(&self, name: &str, args: Value) -> Value;
+    async fn add_tool(&mut self, tool: Arc<dyn LooperTool>);
+    async fn run_tool(&self, name: String, args: Value) -> Value;
 }
