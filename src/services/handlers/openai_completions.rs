@@ -117,7 +117,7 @@ impl OpenAIChatHandler {
                                 }
 
                                 self.sender
-                                    .send(HandlerToLooperMessage::ToolCallPending(index))
+                                    .send(HandlerToLooperMessage::ToolCallPending(tool_calls[index].id.clone()))
                                     .await?;
                             }
                         }
@@ -174,6 +174,10 @@ impl OpenAIChatHandler {
             while let Some(result) = tool_join_set.join_next().await {
                 match result {
                     Ok((tool_call_id, response)) => {
+                        self.sender
+                            .send(HandlerToLooperMessage::ToolCallComplete(tool_call_id.clone()))
+                            .await?;
+
                         self.messages.push(
                             ChatCompletionRequestToolMessage {
                                 content: response.to_string().into(),

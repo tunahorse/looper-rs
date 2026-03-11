@@ -3,14 +3,16 @@ use serde_json::Value;
 type Name = String;
 type Message = String;
 type ToolIndex = usize;
+type ToolId = String;
 
 #[derive(Debug)]
 pub enum HandlerToLooperMessage {
     Assistant(Message),
     Thinking(Message),
     ThinkingComplete,
-    ToolCallPending(ToolIndex),
+    ToolCallPending(ToolId),
     ToolCallRequest(HandlerToLooperToolCallRequest),
+    ToolCallComplete(ToolId),
     TurnComplete
 }
 
@@ -32,7 +34,8 @@ pub enum LooperToInterfaceMessage {
     Assistant(Message),
     Thinking(Message),
     ThinkingComplete,
-    ToolCallPending(ToolIndex),
+    ToolCallPending(ToolId),
     ToolCall(Name),
+    ToolCallComplete(ToolId),
     TurnComplete
 }

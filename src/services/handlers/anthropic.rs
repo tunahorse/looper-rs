@@ -110,14 +110,14 @@ impl AnthropicHandler {
                                         }
                                     },
                                     ContentBlockDelta::InputJsonDelta { partial_json } => {
-                                        if let MessageContent::ToolUse(_) = cb {
+                                        if let MessageContent::ToolUse(t) = cb {
                                             tool_input_bufs
                                                 .entry(index)
                                                 .or_default()
                                                 .push_str(&partial_json);
 
                                             self.sender
-                                                .send(HandlerToLooperMessage::ToolCallPending(index))
+                                                .send(HandlerToLooperMessage::ToolCallPending(t.id.clone()))
                                                 .await?;
                                         }
                                     }
@@ -202,6 +202,10 @@ impl AnthropicHandler {
             while let Some(result) = tool_join_set.join_next().await {
                 match result {
                     Ok((result, tool_use)) => {
+                        self.sender
+                            .send(HandlerToLooperMessage::ToolCallComplete(tool_use.id.clone()))
+                            .await?;
+
                         // Push tool result message to history
                         self.messages.push(Message {
                             role: MessageRole::User,

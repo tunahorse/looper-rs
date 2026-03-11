@@ -108,7 +108,7 @@ impl OpenAIResponsesHandler {
                 }
                 Ok(ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(delta)) => {
                     self.sender
-                        .send(HandlerToLooperMessage::ToolCallPending(delta.output_index as usize))
+                        .send(HandlerToLooperMessage::ToolCallPending(delta.item_id.clone()))
                         .await?;
                 }
                 Ok(ResponseStreamEvent::ResponseOutputItemDone(item_done)) => {
@@ -156,6 +156,10 @@ impl OpenAIResponsesHandler {
             while let Some(result) = tool_join_set.join_next().await {
                 match result {
                     Ok((call_id, value)) => {
+                        self.sender
+                            .send(HandlerToLooperMessage::ToolCallComplete(call_id.clone()))
+                            .await?;
+
                         input_items.push(InputItem::Item(Item::FunctionCallOutput(
                             FunctionCallOutputItemParam {
                                 call_id,

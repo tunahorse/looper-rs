@@ -66,8 +66,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 LooperToInterfaceMessage::ToolCall(name) => {
                     spinner = Some(theme.tool_spinner(&name));
                 },
-                LooperToInterfaceMessage::ToolCallPending(_index) => {
-                    // TODO: Implement intelligent swap of tool calls based on index
+                LooperToInterfaceMessage::ToolCallPending(_id) => {
+                    // TODO: Implement intelligent swap of tool calls based on id
+                },
+                LooperToInterfaceMessage::ToolCallComplete(_id) => {
+                    // TODO: Handle tool call completion
                 },
                 LooperToInterfaceMessage::TurnComplete => {
                     println!("\n{}", theme.separator_line());
