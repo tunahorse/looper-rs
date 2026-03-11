@@ -54,6 +54,7 @@ impl<'a> LooperStreamBuilder<'a> {
     }
 
     pub async fn build(mut self) -> Result<LooperStream> {
+        let sub_agent_enabled = self.sub_agent.is_some();
         let (handler_looper_sender, mut handler_looper_receiver) = mpsc::channel(10000);
 
         let handler: Box<dyn StreamingChatHandler> = match self.handler_type {
@@ -61,7 +62,7 @@ impl<'a> LooperStreamBuilder<'a> {
                 let mut handler = OpenAIChatHandler::new(
                     handler_looper_sender,
                     &m,
-                    &get_system_message(self.instructions.as_deref())?
+                    &get_system_message(self.instructions.as_deref(), sub_agent_enabled)?,
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
@@ -80,7 +81,7 @@ impl<'a> LooperStreamBuilder<'a> {
                 let mut handler = OpenAIResponsesHandler::new(
                     handler_looper_sender,
                     &m,
-                    &get_system_message(self.instructions.as_deref())?
+                    &get_system_message(self.instructions.as_deref(), sub_agent_enabled)?,
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
@@ -99,7 +100,7 @@ impl<'a> LooperStreamBuilder<'a> {
                 let mut handler = AnthropicHandler::new(
                     handler_looper_sender,
                     &m,
-                    &get_system_message(self.instructions.as_deref())?
+                    &get_system_message(self.instructions.as_deref(), sub_agent_enabled)?,
                 )?;
 
                 if let Some(t) = self.tools.as_mut() {
@@ -205,7 +206,11 @@ impl LooperStream {
     }
 }
 
-fn render_system_message(template: &str, instructions: Option<&str>) -> Result<String> {
+fn render_system_message(
+    template: &str, 
+    instructions: Option<&str>,
+    sub_agent_enabled: bool
+) -> Result<String> {
     let mut tera = Tera::default();
     tera.add_raw_template("system_prompt", template)?;
 
@@ -214,9 +219,16 @@ fn render_system_message(template: &str, instructions: Option<&str>) -> Result<S
         ctx.insert("instructions", inst);
     }
 
+    if sub_agent_enabled {
+        ctx.insert("sub_agent", &true);
+    }
+
     Ok(tera.render("system_prompt", &ctx)?)
 }
 
-fn get_system_message(instructions: Option<&str>) -> Result<String> {
-    render_system_message(include_str!("../prompts/system_prompt.txt"), instructions)
+fn get_system_message(
+    instructions: Option<&str>,
+    sub_agent_enabled: bool
+) -> Result<String> {
+    render_system_message(include_str!("../prompts/system_prompt.txt"), instructions, sub_agent_enabled)
 }

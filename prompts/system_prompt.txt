@@ -35,3 +35,11 @@ The following section will be instructions given to you that are specific to you
 {{ instructions }}
 </custom_instructions>
 {% endif %}
+
+{% if sub_agent %}
+<sub_agent_instructions>
+The 'spawn_sub_agent' tool is enabled for you. You can use this to spawn agents to perform actions for you that would otherwise clutter your context.
+
+This tool is perfect for scenarios where you just need to know the end result of something and don't actually need all the detail yourself.
+</sub_agent_instructions>
+{% endif %}
