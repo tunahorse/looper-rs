@@ -1,24 +1,28 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{
-    looper::Looper, 
+    looper::Looper,
     services::{
-        StreamingChatHandler, anthropic::AnthropicHandler, 
+        StreamingChatHandler, anthropic::AnthropicHandler,
         openai_completions::OpenAIChatHandler, openai_responses::OpenAIResponsesHandler
-    }, 
+    },
     tools::{
         EmptyToolSet, LooperTools, SubAgentTool
-    }, 
+    },
     types::{
-        HandlerToLooperMessage, 
-        Handlers, 
-        LooperToInterfaceMessage, 
+        HandlerToLooperMessage,
+        Handlers,
+        LooperToInterfaceMessage,
         MessageHistory
     }
 };
 use anyhow::Result;
 use tera::{Tera, Context};
 use tokio::sync::mpsc::{self, Sender};
+
+const BUFFER_DRAIN_INTERVAL_MS: u64 = 5;
 
 pub struct LooperStream {
     handler: Box<dyn StreamingChatHandler>,
@@ -33,6 +37,7 @@ pub struct LooperStreamBuilder<'a> {
     instructions: Option<String>,
     interface_sender: Option<Sender<LooperToInterfaceMessage>>,
     sub_agent: Option<Looper>,
+    buffered_output: bool,
 }
 
 impl<'a> LooperStreamBuilder<'a> {
@@ -63,6 +68,11 @@ impl<'a> LooperStreamBuilder<'a> {
 
     pub fn interface_sender(mut self, sender: Sender<LooperToInterfaceMessage>) -> Self {
         self.interface_sender = Some(sender);
+        self
+    }
+
+    pub fn buffered_output(mut self) -> Self {
+        self.buffered_output = true;
         self
     }
 
@@ -127,50 +137,47 @@ impl<'a> LooperStreamBuilder<'a> {
         // Spawn a single long-lived listener task that forwards messages
         // from the handler to the interface and executes tool calls.
         if let Some(l_i_s) = self.interface_sender {
+            let buffered = self.buffered_output;
             tokio::spawn(async move {
-                while let Some(message) = handler_looper_receiver.recv().await {
-                    match message {
-                        HandlerToLooperMessage::Assistant(m) => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::Assistant(m))
-                                .await
-                                .unwrap();
+                if buffered {
+                    let mut pool: VecDeque<char> = VecDeque::new();
+                    let mut interval = tokio::time::interval(Duration::from_millis(BUFFER_DRAIN_INTERVAL_MS));
+                    let mut channel_open = true;
+                    loop {
+                        tokio::select! {
+                            biased;
+                            msg = handler_looper_receiver.recv(), if channel_open => {
+                                match msg {
+                                    Some(HandlerToLooperMessage::Assistant(m)) => {
+                                        pool.extend(m.chars());
+                                    }
+                                    Some(other) => {
+                                        if drain_pool(&l_i_s, &mut pool).await.is_err() { break; }
+                                        if forward_non_text(&l_i_s, other).await.is_err() { break; }
+                                    }
+                                    None => {
+                                        channel_open = false;
+                                    }
+                                }
+                            }
+                            _ = interval.tick() => {
+                                if let Some(c) = pool.pop_front() {
+                                    if l_i_s.send(LooperToInterfaceMessage::Assistant(c.to_string())).await.is_err() { break; }
+                                } else if !channel_open {
+                                    break;
+                                }
+                            }
                         }
-                        HandlerToLooperMessage::Thinking(m) => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::Thinking(m))
-                                .await
-                                .unwrap();
-                        }
-                        HandlerToLooperMessage::ThinkingComplete => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::ThinkingComplete)
-                                .await
-                                .unwrap();
-                        }
-                        HandlerToLooperMessage::ToolCallPending(index) => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::ToolCallPending(index))
-                                .await
-                                .unwrap();
-                        }
-                        HandlerToLooperMessage::ToolCallComplete(index) => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::ToolCallComplete(index))
-                                .await
-                                .unwrap();
-                        }
-                        HandlerToLooperMessage::ToolCallRequest(tc) => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::ToolCall(tc.name.clone()))
-                                .await
-                                .unwrap();
-                        }
-                        HandlerToLooperMessage::TurnComplete => {
-                            l_i_s
-                                .send(LooperToInterfaceMessage::TurnComplete)
-                                .await
-                                .unwrap();
+                    }
+                } else {
+                    while let Some(message) = handler_looper_receiver.recv().await {
+                        match message {
+                            HandlerToLooperMessage::Assistant(m) => {
+                                if l_i_s.send(LooperToInterfaceMessage::Assistant(m)).await.is_err() { break; }
+                            }
+                            other => {
+                                if forward_non_text(&l_i_s, other).await.is_err() { break; }
+                            }
                         }
                     }
                 }
@@ -193,6 +200,7 @@ impl LooperStream {
             sub_agent: None,
             instructions: None,
             interface_sender: None,
+            buffered_output: false,
         }
     }
 
@@ -207,6 +215,28 @@ impl LooperStream {
 
         Ok(history)
     }
+}
+
+async fn drain_pool(sender: &Sender<LooperToInterfaceMessage>, pool: &mut VecDeque<char>) -> Result<()> {
+    let text: String = pool.drain(..).collect();
+    if !text.is_empty() {
+        sender.send(LooperToInterfaceMessage::Assistant(text)).await?;
+    }
+    Ok(())
+}
+
+async fn forward_non_text(sender: &Sender<LooperToInterfaceMessage>, msg: HandlerToLooperMessage) -> Result<()> {
+    let interface_msg = match msg {
+        HandlerToLooperMessage::Assistant(_) => unreachable!("Assistant handled separately"),
+        HandlerToLooperMessage::Thinking(m) => LooperToInterfaceMessage::Thinking(m),
+        HandlerToLooperMessage::ThinkingComplete => LooperToInterfaceMessage::ThinkingComplete,
+        HandlerToLooperMessage::ToolCallPending(id) => LooperToInterfaceMessage::ToolCallPending(id),
+        HandlerToLooperMessage::ToolCallRequest(tc) => LooperToInterfaceMessage::ToolCall(tc.name.clone()),
+        HandlerToLooperMessage::ToolCallComplete(id) => LooperToInterfaceMessage::ToolCallComplete(id),
+        HandlerToLooperMessage::TurnComplete => LooperToInterfaceMessage::TurnComplete,
+    };
+    sender.send(interface_msg).await?;
+    Ok(())
 }
 
 fn render_system_message(

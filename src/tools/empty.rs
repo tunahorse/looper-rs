@@ -13,11 +13,11 @@ impl LooperTools for EmptyToolSet {
         vec![]
     }
 
-    async fn add_tool(&mut self, tool: Arc<dyn LooperTool>) {
+    async fn add_tool(&mut self, _tool: Arc<dyn LooperTool>) {
         panic!("Can't add a tool to an empty Tool Set. Create a valid Tool Set to continue")
     }
 
-    async fn run_tool(&self, name: String, args: Value) -> Value {
+    async fn run_tool(&self, name: String, _args: Value) -> Value {
         json!({"error": format!("Unknown function: {}", name)})
     }
 }

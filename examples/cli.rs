@@ -39,6 +39,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .tools(tools)
         .interface_sender(tx)
         .instructions("You're being used as a CLI example for an agent loop. Be succinct yet friendly and helpful.")
+        .buffered_output()
         .build().await?;
 
     let turn_done = Arc::new(Notify::new());

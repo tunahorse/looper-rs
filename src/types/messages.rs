@@ -2,7 +2,6 @@ use serde_json::Value;
 
 type Name = String;
 type Message = String;
-type ToolIndex = usize;
 type ToolId = String;
 
 #[derive(Debug)]
