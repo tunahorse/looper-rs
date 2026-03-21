@@ -22,6 +22,9 @@ indicatif = "0.18.4"
 console = "0.16.2"
 derive_builder = "0.20.2"
 
+[dev-dependencies]
+cargo-husky = { version = "1.5.0", default-features = false, features = ["prepush-hook", "run-cargo-test", "run-cargo-clippy", "run-cargo-fmt"] }
+
 [[example]]
 name = "cli"
 path = "examples/cli.rs"
